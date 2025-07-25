@@ -1,32 +1,39 @@
 #include "../include/helpers.h"
 #include "../include/kernels.h"
+#include "../include/types.h"
 #include <vector>
 #include <random>
 
 
-constexpr int GROUP_SIZE = 8;
-constexpr int SEQ_LEN = 10;
-constexpr int HIDDEN_DIM = 128;
 
 int main(){
 
-    size_t q_bytes = sizeof(float) * GROUP_SIZE * HIDDEN_DIM;
-    size_t k_bytes = sizeof(float) * SEQ_LEN * HIDDEN_DIM;
-    float* queries = (float*)malloc(q_bytes);
-    // Let's assume it's been stored pre-transposed :)
-    float* key_mat = (float*)malloc(k_bytes);
 
-    fillMatrix(queries, q_bytes / sizeof(float));
-    fillMatrix(key_mat, k_bytes / sizeof(float));
+    std::vector<float16_t> keys(SEQ_LEN * HIDDEN_DIM);
+    std::vector<float16_t> queries(GROUP_SIZE * HIDDEN_DIM);
 
-    float* d_queries, *d_key_mat;
-    hipMalloc(&d_queries, q_bytes);
-    hipMalloc(&d_key_mat, k_bytes);
-    hipMemcpy(d_queries, queries, q_bytes, hipMemcpyHostToDevice);
-    hipMemcpy(d_key_mat, key_mat, k_bytes, hipMemcpyHostToDevice);
+    float16_t* d_queries, *d_keys;
 
-    // at launch lets assume d_queries is stored in column-major
-    // assume d_key_mat is stored in row-major (but its transposed)
-    gqa_naive<<<1, 1024>>>(d_queries, d_key_mat, GROUP_SIZE, SEQ_LEN, HIDDEN_DIM);
+    hipMalloc(&d_queries, sizeof(float16_t) * queries.size());
+    hipMalloc(&d_keys, sizeof(float16_t) * keys.size());
+    hipMemcpy(d_queries, queries.data(), queries.size() * sizeof(float16_t), hipMemcpyHostToDevice);
+    hipMemcpy(d_keys, keys.data(), keys.size() * sizeof(float16_t), hipMemcpyHostToDevice);
+
+
+    dim3 gridDim = dim3(ceilDiv(GROUP_SIZE, BLOCK_M), ceilDiv(SEQ_LEN, BLOCK_N));
+    dim3 blockDim = dim3(64, 1);
+
+    gqa_packed<<<gridDim, blockDim>>>(
+        d_queries, 
+        d_keys, 
+        GROUP_SIZE, 
+        SEQ_LEN, 
+        HIDDEN_DIM, 
+        GROUP_SIZE, 
+        SEQ_LEN);
+
+    
+    hipFree(d_queries);
+    hipFree(d_keys);
     return 0;
 }

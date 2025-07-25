@@ -19,3 +19,7 @@ void fillMatrix(float* mat, size_t size){
         mat[i] = getRandomFloat();
     }
 }
+
+int ceilDiv(int num, int denom){
+    return (num + denom -1) / denom;
+}
