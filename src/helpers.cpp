@@ -13,13 +13,6 @@ float getRandomFloat() {
     return dist(getGenerator());
 }
 
-
-void fillMatrix(float* mat, size_t size){
-    for(int i = 0; i < size; i++){
-        mat[i] = getRandomFloat();
-    }
-}
-
 int ceilDiv(int num, int denom){
     return (num + denom -1) / denom;
 }

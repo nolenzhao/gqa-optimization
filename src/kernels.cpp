@@ -9,11 +9,13 @@
 __global__ void gqa_packed(
     float16_t* query, 
     float16_t* keys, 
+    float32_t* attention_output,
     int group_size, 
     int seq_len, 
     int hidden_dim, 
     int lda, 
-    int ldb){
+    int ldb, 
+    int ldd){
 
     auto fragA = AFragT{};
     auto fragB = BFragT{};
@@ -49,19 +51,19 @@ __global__ void gqa_packed(
             // i * ldb calculates (block_k (col dimension)* size of row)
             // i.e. do a num rows * sizeof(rows) offset  
             fragB = load_keys_16x16_row_major(keys + (cCol + i * ldb), ldb);
+
             // Acumulate the ouput 16x16 blocks
+            // fragAcc holds 4 f32_t (row major order)
             fragAcc = __builtin_amdgcn_mfma_f32_16x16x16f16(fragA, fragB, fragAcc, 0, 0, 0);
         }
     }
 
-
-
+    store_attention_pattern_16x16_col_major(attention_output, fragAcc, ldd);
     
 }
 
 // Assuem data is in col-major; we need to load as col-major as well
 __device__ AFragT load_queries_16x16_col_major(float16_t const* input, int ld){
-
 
     static constexpr uint32_t VW = vectorSize(AFragT{});
     static constexpr uint32_t Dim = BLOCK_M;
@@ -151,4 +153,33 @@ __device__ BFragT load_keys_16x16_row_major(float16_t const* input, int ld)
     return fragB;
 }
 
+__device__ void store_attention_pattern_16x16_col_major(float32_t* output, AccumFragT accum, int ld){
 
+    static constexpr uint32_t Dim = BLOCK_N;
+    static constexpr uint32_t VW = vectorSize(AccumFragT{});
+
+    // these are stored in registers  in row major, so they need to be indexed as such
+    auto startCoord2D = std::make_pair((threadIdx.x / Dim) * VW, threadIdx.x % Dim);
+    auto stepCoord2D = std::make_pair(1u, 0u);
+    // accum is composed of 4 registers
+    // the matrix is stored in row-major order
+
+    // Takes the row-major view from the register and almost transposes it to column major indexing
+    // use threadIdx.x = 14 and see how it actually indexes properly from a column persepctive
+    // coord.first goes down into the column (across rows), and coord.second accesses across columns
+    // imagine the registers on top of the matrix, this is how mem is laid out, thread 0 holds 4 elems 
+    // of the first column (since the SIMD's hold row-major form) 
+    // similarly thread 1 holds 4 elems of the second column. thus we can store these contiugously
+    // coord.first = {0, 4, 8, 12} thus we are going into each column, and extracting, going across 
+    // columns using coord.second (i.e. thread1 -> return 0 + 1*16 = 16) -> this is correct in col major
+    auto col_major = [](auto const& coord, auto ld){return coord.first + coord.second * ld;};
+
+    auto startOffset = col_major(startCoord2D, ld);
+    // when transposes the col values are contiguous where the row values are not
+    auto kOffset = col_major(stepCoord2D, ld);
+
+    output[startOffset] = accum[0]; 
+    output[startOffset + kOffset] = accum[1];
+    output[startOffset + 2 * kOffset] = accum[2];
+    output[startOffset + 3 * kOffset] = accum[3];
+}
