@@ -7,8 +7,8 @@
 //Remember: a single wave computes the ful accum for a blkM x blkN mat
 // it itself steps through the entire k loop
 __global__ void gqa_packed(
-    float16_t* query, 
-    float16_t* keys, 
+    float16_t const* query, 
+    float16_t const* keys, 
     float32_t* attention_output,
     int group_size, 
     int seq_len, 
@@ -23,13 +23,7 @@ __global__ void gqa_packed(
 
     fill_frag(fragAcc, 0.0f);
 
-    // Each thread block has WAVE_SIZE threads
-    // Thus, the blockIdx.x corresponds to to the waveGridX
-    /*
-    <--64--><--64--><--64-->
-    [wave 1][wave 2][wave 3] 
-    [block1][block2][block3] 
-    */
+    // Find which wave this is. For each block in the output matrix, there is a corresponding wave
     auto waveGridX = (blockIdx.x * blockDim.x + threadIdx.x) / WAVE_SIZE;
     auto waveGridY = (blockIdx.y * blockDim.y + threadIdx.y);
 
@@ -40,26 +34,25 @@ __global__ void gqa_packed(
     if(cRow < group_size && cCol < seq_len){
         // step through the K loop
         for(int i = 0; i < hidden_dim; i+= BLOCK_K){
-
             // Have each thread load its fragment (4 fp16's in each frag) 
             // to load A (assuming its col major) we need to give start + row offset + columns * lda
             // the row offset controls how deep in a column we are
             // i is a multiple of block_k (gives column number) and lda gives column length (number of rows)
             fragA = load_queries_16x16_col_major(query + (cRow + i * lda), lda);
+
             // B is in row-major order
             // keys gives us the start of matrix, ccol indexes into the row 
             // i * ldb calculates (block_k (col dimension)* size of row)
             // i.e. do a num rows * sizeof(rows) offset  
-            fragB = load_keys_16x16_row_major(keys + (cCol + i * ldb), ldb);
+            fragB = load_keys_16x16_row_major(keys + (i * ldb * cCol), ldb);
 
             // Acumulate the ouput 16x16 blocks
             // fragAcc holds 4 f32_t (row major order)
             fragAcc = __builtin_amdgcn_mfma_f32_16x16x16f16(fragA, fragB, fragAcc, 0, 0, 0);
         }
+        store_attention_pattern_16x16_col_major(attention_output, fragAcc, ldd);
     }
 
-    store_attention_pattern_16x16_col_major(attention_output, fragAcc, ldd);
-    
 }
 
 // Assuem data is in col-major; we need to load as col-major as well
@@ -123,6 +116,21 @@ __device__ BFragT load_keys_16x16_row_major(float16_t const* input, int ld)
     // of the 16x16 matrix we start at 
     // {and col offset [0..15] to specify within that row}
     // Then use kOffset to specify offset to rows {1, 2, 3, 5, etc.}
+
+
+    // <!----SERIOUS out of bounds idxing error-----------!>
+    /*
+    If the mfma does not match perfectly to the input matrix, then we will be accessing 
+    memory out of bounds or into another thread's fragment. 
+    imagine threadIdx.x = 15 for a B matrix of (rowxcol) (16x10)
+    The row will be calcualted correctly as 0
+    The column will be calcualted as 15 -> this is obviously not a valid column
+    when startOffset is calculated it will calc 0 * 16 + 15 = 15
+    this means that we are going to access into t_id 4's high bits of VGPR[0] input access
+
+    N.B. use `lane <lane_idx>` to switch lanes; `info lanes` to view lanes for the curr thread
+    
+    */
     auto startCoord2D = std::make_pair((threadIdx.x / Dim) * VW, // Row
                                         threadIdx.x % Dim);      // Col
     // row, column step here

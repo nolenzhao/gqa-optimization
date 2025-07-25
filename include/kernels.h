@@ -5,7 +5,7 @@
 #include <hip/hip_runtime_api.h>
 #include "types.h"
 
-__global__ void gqa_packed(float16_t* queries, float16_t* key_mat, float32_t* attention_output, int group_size, int seq_len, int hidden_dim, int lda, int ldb, int ldd);
+__global__ void gqa_packed(float16_t const* queries, float16_t const* key_mat, float32_t* attention_output, int group_size, int seq_len, int hidden_dim, int lda, int ldb, int ldd);
 
 __device__ AFragT load_queries_16x16_col_major(float16_t const* input, int ld);
 
