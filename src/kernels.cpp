@@ -39,7 +39,6 @@ __global__ void gqa_packed(
             // the row offset controls how deep in a column we are
             // i is a multiple of block_k (gives column number) and lda gives column length (number of rows)
             fragA = load_queries_16x16_col_major(query + (cRow + i * lda), lda);
-
             // B is in row-major order
             // keys gives us the start of matrix, ccol indexes into the row 
             // i * ldb calculates (block_k (col dimension)* size of row)
@@ -127,9 +126,7 @@ __device__ BFragT load_keys_16x16_row_major(float16_t const* input, int ld)
     The column will be calcualted as 15 -> this is obviously not a valid column
     when startOffset is calculated it will calc 0 * 16 + 15 = 15
     this means that we are going to access into t_id 4's high bits of VGPR[0] input access
-
     N.B. use `lane <lane_idx>` to switch lanes; `info lanes` to view lanes for the curr thread
-    
     */
     auto startCoord2D = std::make_pair((threadIdx.x / Dim) * VW, // Row
                                         threadIdx.x % Dim);      // Col
@@ -157,6 +154,8 @@ __device__ BFragT load_keys_16x16_row_major(float16_t const* input, int ld)
         input[startOffset + 2 * kOffset], // v[2] = Reg 1 [0:15]
         input[startOffset + 3 * kOffset], // v[3] = Reg 1 [16:31]
     };
+
+
 
     return fragB;
 }

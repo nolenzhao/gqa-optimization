@@ -10,23 +10,22 @@ int main(){
 
 
     // For simplicity pretend its transposed already
-    std::vector<float16_t> keys(HIDDEN_DIM * SEQ_LEN);
-    std::vector<float16_t> queries(GROUP_SIZE * HIDDEN_DIM);
-    std::vector<float32_t> attention_output(GROUP_SIZE * SEQ_LEN, std::numeric_limits<float32_t>::signaling_NaN());
+    std::vector<float16_t> keys(PADDED_HIDDEN_DIM * PADDED_SEQ_LEN);
+    std::vector<float16_t> queries(PADDED_GROUP_SIZE * PADDED_HIDDEN_DIM);
+    std::vector<float32_t> attention_output(PADDED_GROUP_SIZE * PADDED_SEQ_LEN, std::numeric_limits<float32_t>::signaling_NaN());
 
+    fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, false, static_cast<float16_t>(2.0));
+    fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false, static_cast<float16_t>(1.0));
 
-    fillMatrix(queries.data(), queries.size(), false, static_cast<float16_t>(2.0));
-    fillMatrix(keys.data(), keys.size(), false, static_cast<float16_t>(1.0));
-
-    print_matrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, "keys");
-    print_matrix(keys.data(), HIDDEN_DIM, SEQ_LEN, "keys", false);
+    print_matrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, "queries", false);
+    print_matrix(keys.data(), HIDDEN_DIM, SEQ_LEN, "keys", true);
 
     float16_t* d_queries, *d_keys;
     float32_t* d_attention_output;
 
     hipMalloc(&d_queries, sizeof(float16_t) * queries.size());
     hipMalloc(&d_keys, sizeof(float16_t) * keys.size());
-    hipMalloc(&d_attention_output, sizeof(float32_t) * GROUP_SIZE * SEQ_LEN);
+    hipMalloc(&d_attention_output, sizeof(float32_t) * PADDED_GROUP_SIZE * PADDED_SEQ_LEN);
     hipMemcpy(d_queries, queries.data(), queries.size() * sizeof(float16_t), hipMemcpyHostToDevice);
     hipMemcpy(d_keys, keys.data(), keys.size() * sizeof(float16_t), hipMemcpyHostToDevice);
 

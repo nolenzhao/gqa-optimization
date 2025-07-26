@@ -22,12 +22,20 @@ inline constexpr int32_t vectorSize(VecT<T, Rank>const& v)
 
 
 template <typename T>
-inline void fillMatrix(T* mat, size_t size, bool rand = true, T val =0.0){
-    for(int i = 0; i < size; i++){
-        if (val == 0)
-            mat[i] = getRandomFloat();
-        else
-            mat[i] = val;
+inline void fillMatrix(T* mat, int valid_m, int valid_n, int padded_m, int padded_n, bool rand = true, T val =0.0, bool colMajor = true){
+    if (colMajor){
+        for(int i = 0; i < valid_n; i++){
+            for(int j = 0; j < valid_m; j++){
+                mat[i * padded_m + j] = val;
+            }
+        }
+    }
+    else {
+        for(int i = 0; i < valid_m; i++){
+            for(int j = 0; j < valid_n; j++){
+                mat[i * padded_n + j] = val;
+            }
+        }
     }
 }
 
@@ -67,5 +75,16 @@ __host__ inline void print_matrix(T* matrix, int rows, int cols, const std::stri
     std::cout << std::endl;
 }
 
-
+template <typename T>
+inline void pad_matrix(T* src, T* dst, int orig_M, int orig_K, int padded_M, int padded_K) {
+    // Zero out the entire padded matrix first
+    memset(dst, 0, padded_M * padded_K * sizeof(T));
+    
+    // Copy original data
+    for (int i = 0; i < orig_M; i++) {
+        memcpy(&dst[i * padded_K], &src[i * orig_K], orig_K * sizeof(T));
+        // Padding columns are already zeroed from memset
+    }
+    // Padding rows are already zeroed from memset
+}
 #endif
