@@ -10,15 +10,19 @@ int main(){
 
 
     // For simplicity pretend its transposed already
+
+    // This is to be interpreted row-major
     std::vector<float16_t> keys(PADDED_HIDDEN_DIM * PADDED_SEQ_LEN);
+
+    // This is to be interpreted col-major
     std::vector<float16_t> queries(PADDED_GROUP_SIZE * PADDED_HIDDEN_DIM);
     std::vector<float32_t> attention_output(PADDED_GROUP_SIZE * PADDED_SEQ_LEN, std::numeric_limits<float32_t>::signaling_NaN());
 
-    fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, false, static_cast<float16_t>(2.0));
-    fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false, static_cast<float16_t>(1.0));
+    fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, false, static_cast<float16_t>(2.0), true);
+    fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false, static_cast<float16_t>(1.0), false);
 
-    print_matrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, "queries", false);
-    print_matrix(keys.data(), HIDDEN_DIM, SEQ_LEN, "keys", true);
+    print_matrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, "queries", true);
+    print_matrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, "keys", false);
 
     float16_t* d_queries, *d_keys;
     float32_t* d_attention_output;
@@ -41,14 +45,14 @@ int main(){
         GROUP_SIZE, 
         SEQ_LEN, 
         HIDDEN_DIM, 
-        GROUP_SIZE,  // lda -> # rows since we load from col-major data
-        SEQ_LEN,  // ldb -> #cols since we load from row-major data
-        GROUP_SIZE // ldd -> #rows since we store as col-major (even though registers are in row-major)
+        PADDED_GROUP_SIZE,  // lda -> # rows since we load from col-major data
+        PADDED_SEQ_LEN,  // ldb -> #cols since we load from row-major data
+        PADDED_GROUP_SIZE // ldd -> #rows since we store as col-major (even though registers are in row-major)
     );
 
     hipMemcpy(attention_output.data(), d_attention_output, sizeof(float32_t) * attention_output.size(), hipMemcpyDeviceToHost);
 
-    print_matrix(attention_output.data(), GROUP_SIZE, SEQ_LEN, "attention_output");
+    print_matrix(attention_output.data(), GROUP_SIZE, SEQ_LEN, PADDED_GROUP_SIZE, PADDED_SEQ_LEN, "attention_output", true);
 
     hipFree(d_queries);
     hipFree(d_keys);

@@ -53,22 +53,23 @@ __device__ inline void fill_frag(VecT<T, Rank>& frag, T value)
 int ceilDiv(int num, int denom);
 
 template <typename T>
-__host__ inline void print_matrix(T* matrix, int rows, int cols, const std::string& name = "",bool col_major=true){
-    std::cout << "\n" << name << " (" << rows << "x" << cols << "):\n";
+__host__ inline void print_matrix(T* matrix, int valid_m, int valid_n, int padded_m, int padded_n, const std::string& name = "", bool col_major = true) {
+    std::cout << "\n" << name << " (valid: " << valid_m << "x" << valid_n 
+              << ", padded: " << padded_m << "x" << padded_n << "):\n";
     std::cout << std::fixed << std::setprecision(4);
     
-    for(int i = 0; i < rows; i++) {
+    for(int i = 0; i < valid_m; i++) {
         std::cout << "[";
-        for(int j = 0; j < cols; j++) {
+        for(int j = 0; j < valid_n; j++) {
             int idx;
             if(col_major) {
-                idx = i + j * rows;  // column-major indexing
+                idx = i + j * padded_m;  // Use padded_m for leading dimension
             } else {
-                idx = i * cols + j;  // row-major indexing
+                idx = i * padded_n + j;  // Use padded_n for leading dimension
             }
             
             std::cout << std::setw(8) << static_cast<float>(matrix[idx]);
-            if(j < cols - 1) std::cout << ", ";
+            if(j < valid_n - 1) std::cout << ", ";
         }
         std::cout << "]\n";
     }
