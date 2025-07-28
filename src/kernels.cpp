@@ -15,25 +15,44 @@ __global__ void gqa_packed(
     int hidden_dim, 
     int lda, 
     int ldb, 
-    int ldd){
+    int ldd) {
+
+    // for a 2x2 output matrix, need to load two rows of A
+    // and load 2 cols of B per K step
+    __shared__ float16_t shared_a[BLOCK_M * 2 * BLOCK_K];
+    __shared__ float16_t shared_b[BLOCK_N * 2 * BLOCK_K]; 
 
     auto fragA = AFragT{};
     auto fragB = BFragT{};
     auto fragAcc = AccumFragT{};
-
     fill_frag(fragAcc, 0.0f);
 
-    // Find which wave this is. For each block in the output matrix, there is a corresponding wave
-    auto waveGridX = (blockIdx.x * blockDim.x + threadIdx.x) / WAVE_SIZE;
-    auto waveGridY = (blockIdx.y * blockDim.y + threadIdx.y);
+    // find which wave we are in (there are 4 now)
+    int wave_id = threadIdx.x / WAVE_SIZE;
+    // partition into row/col; we wil alwyas have two rows and (waves_per_block / 2) cols
+    int wave_row = wave_id / (WAVES_PER_BLOCK / 2);
+    int wave_col = wave_id % (WAVES_PER_BLOCK / 2);
 
-// This gets the absolute row/col of upperleft C block coord that this threadBlock computes
+    // Find which global wave this is. For each block in the output matrix, there is a corresponding wave
+    auto waveGridX = (blockIdx.x * 2) + wave_row;
+    auto waveGridY = (blockIdx.y * (WAVES_PER_BLOCK / 2)) + wave_col;
+
+    // This gets the absolute row/col of upperleft C block coord that this threadBlock computes
     auto cRow = waveGridX * BLOCK_M;
     auto cCol = waveGridY * BLOCK_N;
 
     if(cRow < group_size && cCol < seq_len){
         // step through the K loop
         for(int i = 0; i < hidden_dim; i+= BLOCK_K){
+
+            // assuming 128-bit optimal loads per thread, need one wave to load 2 16x16 matrices
+            if (wave_id == 0)
+                load_data(shared_a, query + (i * lda + cRow), lda, ldb, true);
+            else if (wave_id == 1)
+                load_data(shared_b, keys + (i * ldb + cCol), lda, ldb, false);
+            // Need to point to starting corner of two rows we want to load
+
+            __syncthreads();
             // Have each thread load its fragment (4 fp16's in each frag) 
             // to load A (assuming its col major) we need to give start + row offset + columns * lda
             // the row offset controls how deep in a column we are
@@ -177,4 +196,56 @@ __device__ void store_attention_pattern_16x16_col_major(float32_t* output, Accum
     output[startOffset + kOffset] = accum[1];
     output[startOffset + 2 * kOffset] = accum[2];
     output[startOffset + 3 * kOffset] = accum[3];
+}
+
+
+// Load from HBM to LDS
+__device__ void load_data(float16_t* dst, float16_t const* src, int lda, int ldb, bool data_col_major){
+    // If the input data is in col_major, we should store as row-major and vice-versa
+    // try to have each thread load  128bits
+    // we need to load 512 f16_t values (2 * 16 * 16)
+    // thus need to load 1024bytes -> need 256 threads to load 4 bytes each
+    // 256threads/64 (threads_per_wave) = 4 waves 
+    // imagine wave_id is arranged row-major for 4 quadrants of 2 row input
+    // have the first 64 threads 
+    // ___________________
+    // | wave_0 | wave_1 |
+    // | wave_2 | wave_3 |
+    // Alternatively use one wave to load all 1024 bytes (64 * 16bytes) = 1024 bytes
+    // have each threadIdx load half a column 
+
+    // Given that the group_size is usually about 8 we should really be storing A matrix in LDS as a single row with multiple columns loaded
+    // This way the b matrix, can access the single a row in LDS?
+
+
+    // If the HBM data is col major, we store as row-major
+    if (data_col_major){
+        static constexpr uint32_t Dim = BLOCK_M;
+
+        // TODO: figure out the math for dynamic # waves per block
+        auto startCoord2D = std::make_pair((threadIdx.x / Dim) * 8, // Row
+                                        threadIdx.x % Dim); // Column
+
+        auto stepCoord2D = std::make_pair(1u, 0u);
+
+        auto col_major = [](auto const& coord, auto ld) {return coord.first + coord.second * ld; };
+        auto row_major = [](auto const& coord, auto ld) {return coord.first * ld + coord.second; };
+
+        // The src pointer points to the entire A or B matrix
+        auto startOffsetSrc = col_major(startCoord2D, lda);
+        // the dst pointer points to a small chunk, thus we use hte leading 
+        // dimension of the chunk (in row-major leading dim is block_k)
+        auto startOffsetDst = row_major(startCoord2D, BLOCK_K);
+        auto kOffset = col_major(stepCoord2D, lda);
+
+        // We want dst to be filled row-major but src is column-major
+        dst[startOffsetDst] = src[startOffsetSrc];
+        dst[startOffsetDst + BLOCK_K] = src[startOffsetSrc + kOffset];
+        dst[startOffsetDst + 2 * BLOCK_K] = src[startOffsetSrc + 2 * kOffset];
+        dst[startOffsetDst + 3 * BLOCK_K] = src[startOffsetSrc + 3 * kOffset];
+        dst[startOffsetDst + 4 * BLOCK_K] = src[startOffsetSrc + 4 * kOffset];
+        dst[startOffsetDst + 5 * BLOCK_K] = src[startOffsetSrc + 5 * kOffset];
+        dst[startOffsetDst + 6 * BLOCK_K] = src[startOffsetSrc + 6 * kOffset];
+        dst[startOffsetDst + 7 * BLOCK_K] = src[startOffsetSrc + 7 * kOffset];
+    }
 }

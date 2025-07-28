@@ -2,12 +2,15 @@
 #define CONSTANTS_H
 
 inline constexpr int GROUP_SIZE = 8;
-inline constexpr int SEQ_LEN = 19;
-inline constexpr int HIDDEN_DIM = 128;
+inline constexpr int SEQ_LEN = 15;
+inline constexpr int HIDDEN_DIM = 16;
 inline constexpr int BLOCK_M = 16;
 inline constexpr int BLOCK_N = 16;
 inline constexpr int BLOCK_K = 16;
 inline constexpr int WAVE_SIZE = 64;
+inline constexpr int WAVES_PER_BLOCK = 4;
+inline constexpr int T_BLOCK_X = WAVES_PER_BLOCK * WAVE_SIZE;
+inline constexpr int T_BLOCK_Y = 1;
 
 // Calculate padded dimensions once
 inline constexpr int PADDED_GROUP_SIZE = ((GROUP_SIZE + BLOCK_M - 1) / BLOCK_M) * BLOCK_M;
