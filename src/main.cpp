@@ -35,9 +35,9 @@ int main(){
 
     dim3 blockDim = dim3(T_BLOCK_X, T_BLOCK_Y);
 
-    // TODO: figure out logic to remove hardcoded 2
-    // Since each threadBlock now computes a 2x2 output, we only need half as many in both directions
-    dim3 gridDim = dim3(ceilDiv(GROUP_SIZE, BLOCK_M * 2), ceilDiv(SEQ_LEN, BLOCK_N * 2));
+    // group_sizes are rarely greater than 8 -> thus we should try to group waves into workgroups 
+    // in the y dimension since output matrix likely does not need to grow in x direction * for a 16x16 mfma
+    dim3 gridDim = dim3(ceilDiv(GROUP_SIZE, BLOCK_M), ceilDiv(SEQ_LEN, BLOCK_N * WAVES_PER_BLOCK));
 
     // When this is called we assume d_queries is in col-major and d_keys is in row-major
     gqa_packed<<<gridDim, blockDim>>>(

@@ -12,7 +12,3 @@ float getRandomFloat() {
     static std::uniform_real_distribution<float> dist(0.0f, 1.0f);
     return dist(getGenerator());
 }
-
-int ceilDiv(int num, int denom){
-    return (num + denom -1) / denom;
-}
