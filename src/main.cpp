@@ -34,8 +34,17 @@ int main(){
     hipMemcpy(d_keys, keys.data(), keys.size() * sizeof(float16_t), hipMemcpyHostToDevice);
 
 
-    dim3 blockDim = dim3(64, 1);
-    dim3 gridDim = dim3(ceilDiv(GROUP_SIZE, BLOCK_M), ceilDiv(SEQ_LEN, BLOCK_N));
+    dim3 blockDim;
+    dim3 gridDim;
+    if (BLOCK_M == 4) {
+        blockDim = dim3(4, 1);
+        gridDim = dim3(ceilDiv(GROUP_SIZE, 1), ceilDiv(SEQ_LEN, 1));
+    } else {
+        blockDim = dim3(64, 1);
+        gridDim = dim3(ceilDiv(GROUP_SIZE, 16), ceilDiv(SEQ_LEN, 16));
+    }
+    // dim3 blockDim = dim3(64);
+    // dim3 gridDim = dim3(ceilDiv(GROUP_SIZE, 16), ceilDiv(SEQ_LEN, 16));
 
     // When this is called we assume d_queries is in col-major and d_keys is in row-major
     gqa_packed<<<gridDim, blockDim>>>(
