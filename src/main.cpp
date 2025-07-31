@@ -38,7 +38,7 @@ int main(){
     dim3 gridDim;
     if (BLOCK_M == 4) {
         blockDim = dim3(4, 1);
-        gridDim = dim3(ceilDiv(GROUP_SIZE, 1), ceilDiv(SEQ_LEN, 1));
+        gridDim = dim3(GROUP_SIZE, SEQ_LEN);
     } else {
         blockDim = dim3(64, 1);
         gridDim = dim3(ceilDiv(GROUP_SIZE, 16), ceilDiv(SEQ_LEN, 16));
