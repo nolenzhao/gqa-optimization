@@ -1,9 +1,9 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
-inline constexpr int GROUP_SIZE = 8;
-inline constexpr int SEQ_LEN = 4;
-inline constexpr int HIDDEN_DIM = 6;
+inline constexpr int GROUP_SIZE = 4;
+inline constexpr int SEQ_LEN = 12;
+inline constexpr int HIDDEN_DIM = 10;
 constexpr int MIN_DIM = GROUP_SIZE < SEQ_LEN ? GROUP_SIZE : SEQ_LEN;
 inline constexpr int BLOCK_M = MIN_DIM >= 16 ? 16 : 4;
 inline constexpr int BLOCK_N = MIN_DIM >= 16 ? 16 : 4;

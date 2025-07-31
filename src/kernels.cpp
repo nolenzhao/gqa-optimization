@@ -25,14 +25,14 @@ __global__ void gqa_packed(
     fill_frag(fragAcc, 0.0f);
 
     // Find which wave this is. For each block in the output matrix, there is a corresponding wave
-    auto waveGridX = (blockIdx.x * blockDim.x + threadIdx.x) / WAVE_SIZE;
+    auto waveGridX = (blockIdx.x * blockDim.x + threadIdx.x) / ((BLOCK_M * BLOCK_N) / 4);
     auto waveGridY = (blockIdx.y * blockDim.y + threadIdx.y);
-    printf("waveGridX: %d, waveGridY: %d\n", waveGridX, waveGridY);
+    // printf("waveGridX: %d, waveGridY: %d\n", waveGridX, waveGridY);
 
 // This gets the absolute row/col of upperleft C block coord that this threadBlock computes
     auto cRow = waveGridX * BLOCK_M;
     auto cCol = waveGridY * BLOCK_N;
-    printf("cRow: %d, cCol: %d\n", cRow, cCol);
+    // printf("cRow: %d, cCol: %d\n", cRow, cCol);
 
     if(cRow < group_size && cCol < seq_len){
         // step through the K loop
@@ -94,7 +94,7 @@ __device__ AFragT load_queries_16x16_col_major(float16_t const* input, int ld){
     // == 16 since to step a column over (k direction for A) we need to offset ld (16)
     auto kOffset = col_major(stepCoord2D, ld);
 
-    printf("%d, %d, %f, %f, %f, %f\n", startOffset, kOffset, __half2float(input[startOffset]), __half2float(input[startOffset + kOffset]), __half2float(input[startOffset + 2 * kOffset]), __half2float(input[startOffset + 3 * kOffset]));
+    // printf("%d, %d, %f, %f, %f, %f\n", startOffset, kOffset, __half2float(input[startOffset]), __half2float(input[startOffset + kOffset]), __half2float(input[startOffset + 2 * kOffset]), __half2float(input[startOffset + 3 * kOffset]));
 
     // load with 4 non-contiguous offsets
     auto fragA = AFragT
