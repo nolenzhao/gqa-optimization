@@ -36,8 +36,11 @@ int main(){
     dim3 blockDim = dim3(T_BLOCK_X, T_BLOCK_Y);
 
     // group_sizes are rarely greater than 8 -> thus we should try to group waves into workgroups 
-    // in the y dimension since output matrix likely does not need to grow in x direction * for a 16x16 mfma
-    dim3 gridDim = dim3(ceilDiv(GROUP_SIZE, BLOCK_M), ceilDiv(SEQ_LEN, BLOCK_N * WAVES_PER_BLOCK));
+    // in the y dimension since output matrix likely does not need to grow in x direction for a 16x16 mfma
+    // for a 4x4mfma, assume we are stretching blocks across seq_len dimension for B matrix 
+
+    // TODO: Optimize A later to load more than one block at a time (in the k direction)
+    dim3 gridDim = dim3(ceilDiv(GROUP_SIZE, BLOCK_M), ceilDiv(SEQ_LEN, BLOCK_N * BLOCK_B * WAVES_PER_BLOCK));
 
     // When this is called we assume d_queries is in col-major and d_keys is in row-major
     gqa_packed<<<gridDim, blockDim>>>(
@@ -52,25 +55,6 @@ int main(){
         PADDED_GROUP_SIZE // ldd -> #rows since we store as col-major (even though registers are in row-major)
     );
 
-    // hipStream_t streams[GROUP_SIZE];
-
-    // for(int i = 0; i < GROUP_SIZE; i++)
-    //     hipStreamCreate(&streams[i]);
-
-
-    // for(int i = 0; i < GROUP_SIZE; i++){
-    //     gqa_packed<<<64, 1, 0, streams[i]>>>(
-    //         d_queries_naive + (i * sizeof(float16_t) * PADDED_HIDDEN_DIM * BLOCK_M),
-    //         d_keys, 
-    //         d_attention_output,
-    //         1, //group_size == 1 since we are dealing with a single query vector
-    //         SEQ_LEN, 
-    //         HIDDEN_DIM,
-    //         16, 
-    //         PADDED_SEQ_LEN, 
-    //         16
-    //     );
-    // }
 
     hipMemcpy(attention_output.data(), d_attention_output, sizeof(float32_t) * attention_output.size(), hipMemcpyDeviceToHost);
 
