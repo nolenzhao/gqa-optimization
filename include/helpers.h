@@ -50,7 +50,9 @@ __device__ inline void fill_frag(VecT<T, Rank>& frag, T value)
     }
 }
 
-int ceilDiv(int num, int denom);
+constexpr int ceilDiv(int num, int denom) {
+    return (num + denom - 1) / denom;
+}
 
 template <typename T>
 __host__ inline void print_matrix(T* matrix, int valid_m, int valid_n, int padded_m, int padded_n, const std::string& name = "", bool col_major = true) {
@@ -88,4 +90,6 @@ inline void pad_matrix(T* src, T* dst, int orig_M, int orig_K, int padded_M, int
     }
     // Padding rows are already zeroed from memset
 }
+
+
 #endif
