@@ -3,7 +3,7 @@
 #include "../include/types.h"
 #include <vector>
 #include <random>
-
+#include <roctracer/roctx.h>
 
 
 int main(){
@@ -54,7 +54,6 @@ int main(){
             PADDED_SEQ_LEN,  // ldb -> #cols since we load from row-major data
             PADDED_GROUP_SIZE // ldd -> #rows since we store as col-major (even though registers are in row-major)
         );
-
 
         hipMemcpy(attention_output.data(), d_attention_output, sizeof(float32_t) * attention_output.size(), hipMemcpyDeviceToHost);
 
