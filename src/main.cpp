@@ -19,8 +19,8 @@ int main() {
         std::vector<float16_t> queries(PADDED_GROUP_SIZE * PADDED_HIDDEN_DIM);
         std::vector<float32_t> attention_output(PADDED_GROUP_SIZE * PADDED_SEQ_LEN, std::numeric_limits<float32_t>::signaling_NaN());
 
-        fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, false, static_cast<float16_t>(2.0), true);
-        fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false, static_cast<float16_t>(1.0), false);
+        fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, true);
+        fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false);
 
         float16_t* d_queries, *d_keys;
         float32_t* d_attention_output;
@@ -37,20 +37,25 @@ int main() {
         float32_t* cpu_output = (float32_t*)malloc(sizeof(float32_t) * PADDED_GROUP_SIZE * PADDED_SEQ_LEN);
         cpu_gemm(queries.data(), keys.data(), cpu_output, PADDED_GROUP_SIZE, PADDED_SEQ_LEN, PADDED_HIDDEN_DIM);
 
-        gqa_packed<<<gridDim, blockDim>>>(
-            d_queries, 
-            d_keys, 
-            d_attention_output,
-            GROUP_SIZE, 
-            SEQ_LEN, 
-            HIDDEN_DIM, 
-            PADDED_GROUP_SIZE,  // lda -> # rows since we load from col-major data
-            PADDED_SEQ_LEN,  // ldb -> #cols since we load from row-major data
-            PADDED_GROUP_SIZE // ldd -> #rows since we store as col-major (even though registers are in row-major)
-        );
+        time_kernel("Naive", 
+        [&](){
+            gqa_packed<<<gridDim, blockDim>>>(
+                d_queries, 
+                d_keys, 
+                d_attention_output,
+                GROUP_SIZE, 
+                SEQ_LEN, 
+                HIDDEN_DIM, 
+                PADDED_GROUP_SIZE,  // lda -> # rows since we load from col-major data
+                PADDED_SEQ_LEN,  // ldb -> #cols since we load from row-major data
+                PADDED_GROUP_SIZE // ldd -> #rows since we store as col-major (even though registers are in row-major)
+            );
+        });
 
         hipMemcpy(attention_output.data(), d_attention_output, sizeof(float32_t) * attention_output.size(), hipMemcpyDeviceToHost);
         validate_valid_region(cpu_output, attention_output.data(), GROUP_SIZE, SEQ_LEN, PADDED_GROUP_SIZE, PADDED_SEQ_LEN);
+
+        // print_matrix(attention_output.data(), GROUP_SIZE, SEQ_LEN, PADDED_GROUP_SIZE, PADDED_SEQ_LEN, "4x4lds", true);
 
         free(cpu_output);
         hipFree(d_queries);
@@ -69,8 +74,8 @@ int main() {
         std::vector<float16_t> queries(PADDED_GROUP_SIZE * PADDED_HIDDEN_DIM);
         std::vector<float32_t> attention_output(PADDED_GROUP_SIZE * PADDED_SEQ_LEN, std::numeric_limits<float32_t>::signaling_NaN());
 
-        fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, false, static_cast<float16_t>(2.0), true);
-        fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false, static_cast<float16_t>(1.0), false);
+        fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, true, true);
+        fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false, true);
 
         float16_t* d_queries, *d_keys;
         float32_t* d_attention_output;
@@ -87,20 +92,26 @@ int main() {
         float32_t* cpu_output = (float32_t*)malloc(sizeof(float32_t) * PADDED_GROUP_SIZE * PADDED_SEQ_LEN);
         cpu_gemm(queries.data(), keys.data(), cpu_output, PADDED_GROUP_SIZE, PADDED_SEQ_LEN, PADDED_HIDDEN_DIM);
 
-        gqa_packed<<<gridDim, blockDim>>>(
-            d_queries, 
-            d_keys, 
-            d_attention_output,
-            GROUP_SIZE, 
-            SEQ_LEN, 
-            HIDDEN_DIM, 
-            PADDED_GROUP_SIZE,  // lda -> # rows since we load from col-major data
-            PADDED_SEQ_LEN,  // ldb -> #cols since we load from row-major data
-            PADDED_GROUP_SIZE // ldd -> #rows since we store as col-major (even though registers are in row-major)
-        );
+        time_kernel("4x4-LDS", 
+        [&](){
+            gqa_packed<<<gridDim, blockDim>>>(
+                d_queries, 
+                d_keys, 
+                d_attention_output,
+                GROUP_SIZE, 
+                SEQ_LEN, 
+                HIDDEN_DIM, 
+                PADDED_GROUP_SIZE,  // lda -> # rows since we load from col-major data
+                PADDED_SEQ_LEN,  // ldb -> #cols since we load from row-major data
+                PADDED_GROUP_SIZE // ldd -> #rows since we store as col-major (even though registers are in row-major)
+            );
+        });
+
 
         hipMemcpy(attention_output.data(), d_attention_output, sizeof(float32_t) * attention_output.size(), hipMemcpyDeviceToHost);
         validate_valid_region(cpu_output, attention_output.data(), GROUP_SIZE, SEQ_LEN, PADDED_GROUP_SIZE, PADDED_SEQ_LEN);
+
+        // print_matrix(attention_output.data(), GROUP_SIZE, SEQ_LEN, PADDED_GROUP_SIZE, PADDED_SEQ_LEN, "4x4lds", true);
 
         free(cpu_output);
         hipFree(d_queries);
@@ -119,9 +130,11 @@ int main() {
         std::vector<float16_t> queries(PADDED_GROUP_SIZE * PADDED_HIDDEN_DIM);
         std::vector<float32_t> attention_output(PADDED_GROUP_SIZE * PADDED_SEQ_LEN, std::numeric_limits<float32_t>::signaling_NaN());
 
-        fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, false, static_cast<float16_t>(2.0), true);
-        fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false, static_cast<float16_t>(1.0), false);
+        fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, true, true);
+        fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false, true);
 
+        // fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, false, );
+        // fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, true);
         float16_t* d_queries, *d_keys;
         float32_t* d_attention_output;
 
@@ -137,20 +150,25 @@ int main() {
         float32_t* cpu_output = (float32_t*)malloc(sizeof(float32_t) * PADDED_GROUP_SIZE * PADDED_SEQ_LEN);
         cpu_gemm(queries.data(), keys.data(), cpu_output, PADDED_GROUP_SIZE, PADDED_SEQ_LEN, PADDED_HIDDEN_DIM);
 
-        gqa_packed<<<gridDim, blockDim>>>(
-            d_queries, 
-            d_keys, 
-            d_attention_output,
-            GROUP_SIZE, 
-            SEQ_LEN, 
-            HIDDEN_DIM, 
-            PADDED_GROUP_SIZE,  // lda -> # rows since we load from col-major data
-            PADDED_SEQ_LEN,  // ldb -> #cols since we load from row-major data
-            PADDED_GROUP_SIZE // ldd -> #rows since we store as col-major (even though registers are in row-major)
-        );
+        time_kernel("4x4-LDS", 
+        [&](){
+            gqa_packed<<<gridDim, blockDim>>>(
+                d_queries, 
+                d_keys, 
+                d_attention_output,
+                GROUP_SIZE, 
+                SEQ_LEN, 
+                HIDDEN_DIM, 
+                PADDED_GROUP_SIZE,  // lda -> # rows since we load from col-major data
+                PADDED_SEQ_LEN,  // ldb -> #cols since we load from row-major data
+                PADDED_GROUP_SIZE // ldd -> #rows since we store as col-major (even though registers are in row-major)
+            );
+        });
 
         hipMemcpy(attention_output.data(), d_attention_output, sizeof(float32_t) * attention_output.size(), hipMemcpyDeviceToHost);
         validate_valid_region(cpu_output, attention_output.data(), GROUP_SIZE, SEQ_LEN, PADDED_GROUP_SIZE, PADDED_SEQ_LEN);
+
+        // print_matrix(attention_output.data(), GROUP_SIZE, SEQ_LEN, PADDED_GROUP_SIZE, PADDED_SEQ_LEN, "4x4lds", true);
 
         free(cpu_output);
         hipFree(d_queries);

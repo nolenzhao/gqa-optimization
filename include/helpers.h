@@ -5,6 +5,8 @@
 #include <iostream>
 #include <iomanip>
 #include <random>
+#include <hip/hip_runtime.h>
+#include <hip/hip_runtime_api.h>
 
 
 std::mt19937& getGenerator();
@@ -22,18 +24,39 @@ inline constexpr int32_t vectorSize(VecT<T, Rank>const& v)
 
 
 template <typename T>
-inline void fillMatrix(T* mat, int valid_m, int valid_n, int padded_m, int padded_n, bool rand = true, T val =0.0, bool colMajor = true){
-    if (colMajor){
-        for(int i = 0; i < valid_n; i++){
-            for(int j = 0; j < valid_m; j++){
-                mat[i * padded_m + j] = val;
+inline void fillMatrix(T* mat, int valid_m, int valid_n, int padded_m, int padded_n, bool colMajor = true, bool rand = true, T val =0.0){
+    if (rand) {
+        // Random filling using the existing random generator
+        std::uniform_real_distribution<float> dist(0.0f, 1.0f);  // Adjust range as needed
+        
+        if (colMajor){
+            for(int i = 0; i < valid_n; i++){
+                for(int j = 0; j < valid_m; j++){
+                    mat[i * padded_m + j] = static_cast<T>(dist(getGenerator()));
+                }
             }
         }
-    }
-    else {
-        for(int i = 0; i < valid_m; i++){
-            for(int j = 0; j < valid_n; j++){
-                mat[i * padded_n + j] = val;
+        else {
+            for(int i = 0; i < valid_m; i++){
+                for(int j = 0; j < valid_n; j++){
+                    mat[i * padded_n + j] = static_cast<T>(dist(getGenerator()));
+                }
+            }
+        }
+    } else {
+        // Predetermined value filling
+        if (colMajor){
+            for(int i = 0; i < valid_n; i++){
+                for(int j = 0; j < valid_m; j++){
+                    mat[i * padded_m + j] = val;
+                }
+            }
+        }
+        else {
+            for(int i = 0; i < valid_m; i++){
+                for(int j = 0; j < valid_n; j++){
+                    mat[i * padded_n + j] = val;
+                }
             }
         }
     }
@@ -94,7 +117,29 @@ inline void pad_matrix(T* src, T* dst, int orig_M, int orig_K, int padded_M, int
 
 void cpu_gemm(float16_t const* A, float16_t const* B, float32_t* C, int M, int N, int K);
 
-void validate_valid_region(float32_t* C1, float32_t* C2, int valid_rows, int valid_cols, 
-                          int padded_rows, int padded_cols);
+void validate_valid_region(float32_t* C1, float32_t* C2, int valid_rows, int valid_cols, int padded_rows, int padded_cols);
 
+
+template<typename KernelFunc>
+inline float time_kernel(const std::string& name, KernelFunc&& kernel_call) {
+    hipEvent_t start, stop;
+    hipEventCreate(&start);
+    hipEventCreate(&stop);
+    
+    hipEventRecord(start);
+    kernel_call();
+    hipEventRecord(stop);
+    hipEventSynchronize(stop);
+    
+    float milliseconds = 0;
+    hipEventElapsedTime(&milliseconds, start, stop);
+    std::cout << name << " execution time: " << milliseconds << " ms\n";
+    
+    hipEventDestroy(start);
+    hipEventDestroy(stop);
+    return milliseconds;
+}
+
+
+                        
 #endif
