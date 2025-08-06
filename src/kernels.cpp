@@ -266,8 +266,6 @@ namespace Mfma4x4{
                     load_queries(shared_a, query + (i * lda + output_row_wave), lda);
                 }
 
-                __syncthreads();
-
                 // Just have each wave load it's own matrix -> each thread loads 8 bytes
                 // when we call this we are pointing at the correct row/col
                 // keys is stored in row-major in HBM and stored as col-major in s_mem
@@ -283,14 +281,14 @@ namespace Mfma4x4{
                     fragA = load_queries_4x4_col_major(shared_a , BLOCK_K, local_wave_id);
                 }
 
-                __syncthreads();
                 // B is in row-major order
                 // keys gives us the start of matrix, ccol indexes into the row 
                 // i * ldb calculates (block_k (col dimension)* size of row)
                 // i.e. do a num rows * sizeof(rows) offset  
 
-                fragB = load_keys_4x4_row_major(shared_b + (local_wave_id * BLOCK_K * BLOCK_N), BLOCK_K, local_wave_id);
+                fragB = load_keys_4x4_row_major(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
 
+                __syncthreads();
                 // Acumulate the ouput 16x16 blocks
                 // fragAcc holds 4 f32_t (row major order)
                 fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);

@@ -40,7 +40,6 @@ namespace Mfma16x16 {
     __device__ void load_queries(float16_t* dst, float16_t const* src, int ld);
     __device__ void load_keys_quad(float16_t* dst, float16_t const* src, int ld);
 }
-// __device__ void load_data(float16_t* dst, float16_t const* src, int lda, int ldb, bool data_col_major);
 
 __device__ int col_major(const std::pair<int, int>& coord, int ld);
 __device__ int row_major(const std::pair<int, int>& coord, int ld);

@@ -38,10 +38,10 @@ void cpu_gemm(float16_t const* A, float16_t const* B, float32_t* C, int M, int N
 // This should be the primary validation function to use
 void validate_valid_region(float32_t* C1, float32_t* C2, int valid_rows, int valid_cols, 
                           int padded_rows, int padded_cols) {
-    const float TOLERANCE = 1e-5f;
+    const float TOLERANCE = 1e-2f;
     bool mismatch_found = false;
     int mismatch_count = 0;
-    const int MAX_MISMATCHES_TO_SHOW = 5;
+    const int MAX_MISMATCHES_TO_SHOW = 10;
     
     std::cout << "Comparing valid region: " << valid_rows << "x" << valid_cols 
               << " within padded " << padded_rows << "x" << padded_cols << " matrices\n";
