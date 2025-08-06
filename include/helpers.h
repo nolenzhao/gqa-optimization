@@ -92,4 +92,9 @@ inline void pad_matrix(T* src, T* dst, int orig_M, int orig_K, int padded_M, int
 }
 
 
+void cpu_gemm(float16_t const* A, float16_t const* B, float32_t* C, int M, int N, int K);
+
+void validate_valid_region(float32_t* C1, float32_t* C2, int valid_rows, int valid_cols, 
+                          int padded_rows, int padded_cols);
+
 #endif
