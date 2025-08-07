@@ -261,6 +261,8 @@ namespace Mfma4x4{
                 // We are storing queries in row-major order in LDS
                 // We load from HBM as col-major
                 // only need to load a 4x4f16 -> 256 bits -> use four threads to load  
+
+                __syncthreads();
                 
                 if (threadIdx.x < 4){
                     load_queries(shared_a, query + (i * lda + output_row_wave), lda);
@@ -288,7 +290,7 @@ namespace Mfma4x4{
 
                 fragB = load_keys_4x4_row_major(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
 
-                __syncthreads();
+               
                 // Acumulate the ouput 16x16 blocks
                 // fragAcc holds 4 f32_t (row major order)
                 fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);
@@ -541,10 +543,11 @@ namespace Mfma16x16{
                 // the 16x16 A matrix -> we shuould try and load double 
                 // Do we really need to load B into LDS? only really need to reuse A right?
                 // when we call load_queries we are already pointing at the correct upper left
+                __syncthreads();
+
                 if (wave_id == 0){
                     load_queries(shared_a, query + (i * lda + cRow), lda);
                 }
-                __syncthreads();
                 // Just have each wave load it's own matrix -> each thread loads 8 bytes
                 // when we call this we are pointing at the correct row/col
                 load_keys_quad(shared_b + (wave_id * BLOCK_K * BLOCK_N), keys + (i * ldb + cCol), ldb);

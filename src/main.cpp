@@ -6,9 +6,10 @@
 #include <roctracer/roctx.h>
 
 
-int main() {
+int main(int argc, char* argv[]) {
 
     // Test 1: Naive implementation
+    if (std::stoi(argv[1]))
     {
         using namespace Naive;
         std::cout << "\n=== Unoptimized ===\n";
@@ -64,6 +65,7 @@ int main() {
     }
 
     // Test 2: 16x16 MFMA with LDS
+    if (std::stoi(argv[2]))
     {
         using namespace Mfma16x16;
         std::cout << "\n=== 16x16 LDS ===\n";
@@ -74,8 +76,8 @@ int main() {
         std::vector<float16_t> queries(PADDED_GROUP_SIZE * PADDED_HIDDEN_DIM);
         std::vector<float32_t> attention_output(PADDED_GROUP_SIZE * PADDED_SEQ_LEN, std::numeric_limits<float32_t>::signaling_NaN());
 
-        fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, true, true);
-        fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false, true);
+        fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, true);
+        fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false);
 
         float16_t* d_queries, *d_keys;
         float32_t* d_attention_output;
@@ -92,7 +94,7 @@ int main() {
         float32_t* cpu_output = (float32_t*)malloc(sizeof(float32_t) * PADDED_GROUP_SIZE * PADDED_SEQ_LEN);
         cpu_gemm(queries.data(), keys.data(), cpu_output, PADDED_GROUP_SIZE, PADDED_SEQ_LEN, PADDED_HIDDEN_DIM);
 
-        time_kernel("4x4-LDS", 
+        time_kernel("16x16-LDS", 
         [&](){
             gqa_packed<<<gridDim, blockDim>>>(
                 d_queries, 
@@ -119,7 +121,9 @@ int main() {
         hipFree(d_attention_output);
     }
 
+    
     // Test 3: 4x4 MFMA with LDS
+    if (std::stoi(argv[3]))
     {
         using namespace Mfma4x4;
         std::cout << "\n=== 4x4 LDS ===\n";
@@ -130,11 +134,9 @@ int main() {
         std::vector<float16_t> queries(PADDED_GROUP_SIZE * PADDED_HIDDEN_DIM);
         std::vector<float32_t> attention_output(PADDED_GROUP_SIZE * PADDED_SEQ_LEN, std::numeric_limits<float32_t>::signaling_NaN());
 
-        fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, true, true);
-        fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false, true);
+        fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, true);
+        fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, false);
 
-        // fillMatrix(queries.data(), GROUP_SIZE, HIDDEN_DIM, PADDED_GROUP_SIZE, PADDED_HIDDEN_DIM, false, );
-        // fillMatrix(keys.data(), HIDDEN_DIM, SEQ_LEN, PADDED_HIDDEN_DIM, PADDED_SEQ_LEN, true);
         float16_t* d_queries, *d_keys;
         float32_t* d_attention_output;
 
