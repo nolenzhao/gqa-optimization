@@ -3,7 +3,7 @@
 
 
 inline constexpr int GROUP_SIZE = 8;
-inline constexpr int SEQ_LEN = 66;
+inline constexpr int SEQ_LEN = 500;
 inline constexpr int HIDDEN_DIM = 128;
 inline constexpr int WAVE_SIZE = 64;
 
