@@ -20,7 +20,7 @@ namespace Mfma4x4 {
 
     __device__ AFragT load_queries_4x4_col_major(float16_t const* input, int ld, int wave_id);
 
-    __device__ BFragT load_keys_4x4_row_major(float16_t const* input, int ld, int wave_id);
+    __device__ BFragT load_keys_4x4_row_major(float16_t const* input, int ld);
 
     __device__ void store_attention_pattern_4x4_col_major(float32_t* output, Mfma4x4::AccumFragT accum, int ld);
 

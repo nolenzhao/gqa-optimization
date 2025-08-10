@@ -211,7 +211,7 @@ namespace Mfma4x4{
         // Just init to 4 16x16 
         // It would be nice to dynamically allocate LDS depending on the seq_len size, but that would 
         // require variable LDS size for diff threadBlocks
-        __shared__ float16_t shared_b[BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK]; 
+        // __shared__ float16_t shared_b[BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK]; 
 
         auto fragA = AFragT{};
         auto fragB = BFragT{};
@@ -271,7 +271,7 @@ namespace Mfma4x4{
                 // Just have each wave load it's own matrix -> each thread loads 8 bytes
                 // when we call this we are pointing at the correct row/col
                 // keys is stored in row-major in HBM and stored as col-major in s_mem
-                load_keys_quad(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), keys + (i * ldb + output_col_wave), ldb);
+                // load_keys_quad(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), keys + (i * ldb + output_col_wave), ldb);
 
                 __syncthreads();
                 // Need to point to starting corner of two rows we want to load
@@ -288,7 +288,7 @@ namespace Mfma4x4{
                 // i * ldb calculates (block_k (col dimension)* size of row)
                 // i.e. do a num rows * sizeof(rows) offset  
 
-                fragB = load_keys_4x4_row_major(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
+                fragB = load_keys_4x4_row_major(keys + (i * ldb + output_col_wave), ldb);
 
                
                 // Acumulate the ouput 16x16 blocks
@@ -342,9 +342,10 @@ namespace Mfma4x4{
         return fragA;
     }
 
-    __device__ BFragT load_keys_4x4_row_major(float16_t const* input, int ld, int wave_id)
+    __device__ BFragT load_keys_4x4_row_major(float16_t const* input, int ld)
     {
         static constexpr uint32_t VW = vectorSize(BFragT{});
+
         static constexpr uint32_t Dim = BLOCK_N * BLOCK_B;
 
         // To start the loading process, let's visualize in 2D coords.
@@ -370,9 +371,9 @@ namespace Mfma4x4{
 
         // This gets the start idx at each block of 4 rows (since our VW is 4)
         // we can only store 4 rows in each SIMD
-        auto startOffset = col_major(startCoord2D, ld);
+        auto startOffset = row_major(startCoord2D, ld);
         // kOffset is 16 since to go down a row, need to go 16 offset in row-major
-        auto kOffset = col_major(stepCoord2D, ld);
+        auto kOffset = row_major(stepCoord2D, ld);
 
         // If you notice carefully, kOffset != 1.
         // This means the following is vector is loaded with 4 non-contiguous offsets,
