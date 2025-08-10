@@ -414,10 +414,12 @@ namespace Mfma4x4{
         // when transposes the col values are contiguous where the row values are not
         auto kOffset = col_major(stepCoord2D, ld);
 
-        output[startOffset] = accum[0]; 
-        output[startOffset + kOffset] = accum[1];
-        output[startOffset + 2 * kOffset] = accum[2];
-        output[startOffset + 3 * kOffset] = accum[3];
+        *((AccumFragT*)(output + startOffset)) = accum;
+
+        // output[startOffset] = accum[0]; 
+        // output[startOffset + kOffset] = accum[1];
+        // output[startOffset + 2 * kOffset] = accum[2];
+        // output[startOffset + 3 * kOffset] = accum[3];
     }
 
 
@@ -511,9 +513,6 @@ namespace Mfma16x16{
         // We should use LDS to reduce register pressure
         
         // Just init to 4 16x16 
-        // It would be nice to dynamically allocate LDS depending on the seq_len size, but that would 
-        // require variable LDS size for diff threadBlocks
-        __shared__ float16_t shared_b[BLOCK_K * BLOCK_N * WAVES_PER_BLOCK]; 
 
         auto fragA = AFragT{};
         auto fragB = BFragT{};
@@ -530,7 +529,7 @@ namespace Mfma16x16{
         auto waveGridX = blockIdx.x + wave_row;
         auto waveGridY = (blockIdx.y * WAVES_PER_BLOCK) + wave_col;
 
-        // This gets the absolute row/col of upperleft C block coord that this threadBlock computes
+        // This gets the absolute row/col of upperleft C block coord that this wave computes
         auto cRow = waveGridX * BLOCK_M;
         auto cCol = waveGridY * BLOCK_N;
 
@@ -541,33 +540,27 @@ namespace Mfma16x16{
 
                 // assuming 128-bit optimal loads per thread we only need one wave to load 
                 // the 16x16 A matrix -> we shuould try and load double 
-                // Do we really need to load B into LDS? only really need to reuse A right?
                 // when we call load_queries we are already pointing at the correct upper left
                 __syncthreads();
 
                 if (wave_id == 0){
                     load_queries(shared_a, query + (i * lda + cRow), lda);
                 }
-                // Just have each wave load it's own matrix -> each thread loads 8 bytes
-                // when we call this we are pointing at the correct row/col
-                load_keys_quad(shared_b + (wave_id * BLOCK_K * BLOCK_N), keys + (i * ldb + cCol), ldb);
 
                 __syncthreads();
                 // Need to point to starting corner of two rows we want to load
 
                 // Have each thread load its fragment (4 fp16's in each frag) 
                 // shared_a has been loaded as row-major so the load to registers is correctly col-major
-                fragA = load_queries_16x16_col_major(shared_a , BLOCK_K, wave_id);
+                fragA = load_queries_16x16_col_major(shared_a , BLOCK_K);
                 // B is in row-major order
                 // keys gives us the start of matrix, ccol indexes into the row 
                 // i * ldb calculates (block_k (col dimension)* size of row)
                 // i.e. do a num rows * sizeof(rows) offset  
 
-                // <<!---You're trying to have every thread use the same pointer to shared_b---!>
-                // Instead you should properly point to the correct segment and then use local_t_id to idx
-                // so use the info you have in this func (wave_id, etc. to point to correct offset into s_mem)
-                // the same cna be said for loading fragA, just point to the correct segment using parity offset
-                fragB = load_keys_16x16_row_major(shared_b + (wave_id * BLOCK_K * BLOCK_N), BLOCK_K, wave_id);
+                // stored row-major in HBM, we need this to be row-major in VGPR's
+                // seems like load to LDS should allow contiguous loads -> better?
+                fragB = load_keys_16x16_row_major(keys + (i * ldb + cCol), ldb);
 
                 // Acumulate the ouput 16x16 blocks
                 // fragAcc holds 4 f32_t (row major order)
@@ -580,7 +573,7 @@ namespace Mfma16x16{
         }
     }
 
-    __device__ AFragT load_queries_16x16_col_major(float16_t const* input, int ld, int wave_id){
+    __device__ AFragT load_queries_16x16_col_major(float16_t const* input, int ld){
 
         static constexpr uint32_t VW = vectorSize(AFragT{});
         static constexpr uint32_t Dim = BLOCK_M;
@@ -589,7 +582,7 @@ namespace Mfma16x16{
         // To start the loading process, let's visualize in 2D coords.
         // Each thread will load 4 elements at maximum.
         // We need to know where they start, and where the next elements are.
-        int local_t_id = threadIdx.x - wave_id * WAVE_SIZE;
+        int local_t_id = threadIdx.x % WAVE_SIZE;
 
         // Since we're storing this column-neighbor from column-major data 
         // we can only fit 4 columns in a SIMD so we calculate the offset between 
@@ -620,7 +613,7 @@ namespace Mfma16x16{
         return fragA;
     }
 
-    __device__ BFragT load_keys_16x16_row_major(float16_t const* input, int ld, int wave_id) {
+    __device__ BFragT load_keys_16x16_row_major(float16_t const* input, int ld) {
 
         static constexpr uint32_t VW = vectorSize(BFragT{});
         static constexpr uint32_t Dim = BLOCK_N;
@@ -646,9 +639,9 @@ namespace Mfma16x16{
 
         // This gets the start idx at each block of 4 rows (since our VW is 4)
         // we can only store 4 rows in each SIMD
-        auto startOffset = col_major(startCoord2D, ld);
+        auto startOffset = row_major(startCoord2D, ld);
         // kOffset is 16 since to go down a row, need to go 16 offset in row-major
-        auto kOffset = col_major(stepCoord2D, ld);
+        auto kOffset = row_major(stepCoord2D, ld);
 
         // If you notice carefully, kOffset != 1.
         // This means the following is vector is loaded with 4 non-contiguous offsets,
