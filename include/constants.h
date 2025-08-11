@@ -2,8 +2,8 @@
 #define CONSTANTS_H
 
 
-inline constexpr int GROUP_SIZE = 18;
-inline constexpr int SEQ_LEN = 34;
+inline constexpr int GROUP_SIZE = 16;
+inline constexpr int SEQ_LEN = 32;
 inline constexpr int HIDDEN_DIM = 10;
 inline constexpr int WAVE_SIZE = 64;
 
