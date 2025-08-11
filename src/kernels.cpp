@@ -203,7 +203,7 @@ namespace Mfma4x4{
         // we have 4 waves in this t_block and they should be growing in y direction
         
         //load One block of A every iteration
-        __shared__ float16_t shared_a[2 * BLOCK_M * BLOCK_K];
+        __shared__ float16_t shared_a[BLOCK_M * BLOCK_K];
         __shared__ float16_t shared_a2[BLOCK_M * BLOCK_K];
 
         // load 4 blocks of B every iteration to perform mfma with single A 
@@ -212,7 +212,7 @@ namespace Mfma4x4{
         // Just init to 4 16x16 
         // It would be nice to dynamically allocate LDS depending on the seq_len size, but that would 
         // require variable LDS size for diff threadBlocks
-        __shared__ float16_t shared_b[2 * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK]; 
+        __shared__ float16_t shared_b[BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK]; 
         __shared__ float16_t shared_b2[BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK]; 
 
         auto fragA = AFragT{};
@@ -273,7 +273,7 @@ namespace Mfma4x4{
                 // We are storing queries in row-major order in LDS
                 // We load from HBM as col-major
                 // only need to load a 4x4f16 -> 256 bits -> use four threads to load  
-                
+
                 if (threadIdx.x < 4){
                     load_queries(shared_a + (parity * BLOCK_M * BLOCK_K), query + (i * lda + output_row_wave), lda);
                 }
@@ -281,7 +281,7 @@ namespace Mfma4x4{
                 // Just have each wave load it's own matrix -> each thread loads 8 bytes
                 // when we call this we are pointing at the correct row/col
                 // keys is stored in row-major in HBM and stored as col-major in s_mem
-                load_keys_quad(shared_b + (parity * BLOCK_K * BLOCK_N * BLOCK_B) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), keys + (i * ldb + output_col_wave), ldb);
+                load_keys_quad(shared_b + (parity * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), keys + (i * ldb + output_col_wave), ldb);
 
                 // Need to point to starting corner of two rows we want to load
                 __syncthreads();
@@ -298,7 +298,7 @@ namespace Mfma4x4{
                 // i * ldb calculates (block_k (col dimension)* size of row)
                 // i.e. do a num rows * sizeof(rows) offset  
 
-                fragB = load_keys_4x4_row_major(shared_b + ((1 - parity) * BLOCK_K * BLOCK_N * BLOCK_B) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
+                fragB = load_keys_4x4_row_major(shared_b + ((1 - parity) * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
 
                 // __syncthreads();
                 // Acumulate the ouput 16x16 blocks
@@ -309,6 +309,13 @@ namespace Mfma4x4{
                 // switch parity bit
                 parity = parity ? 0 : 1;
             }
+ 
+            if (threadIdx.x % WAVE_SIZE < 4){
+                fragA = load_queries_4x4_col_major(shared_a + (parity * BLOCK_M * BLOCK_K), BLOCK_K, local_wave_id);
+            }
+            fragB = load_keys_4x4_row_major(shared_b + (parity * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
+            fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);
+            __syncthreads();
             store_attention_pattern_4x4_col_major(attention_output + (output_col_wave* ldd + output_row_wave), fragAcc, ldd);
         }
     }
