@@ -55,6 +55,11 @@ namespace Mfma16x16HalfLDS{
     __device__ Mfma16x16::BFragT load_keys_16x16_row_major(float16_t const* input, int ld);
 }
 
+namespace Mfma4x4Occup{
+
+    __global__ void gqa_packed(float16_t const* queries, float16_t const* key_mat, float32_t* attention_output, int group_size, int seq_len, int hidden_dim, int lda, int ldb, int ldd);
+}
+
 __device__ int col_major(const std::pair<int, int>& coord, int ld);
 __device__ int row_major(const std::pair<int, int>& coord, int ld);
 #endif
