@@ -560,11 +560,6 @@ namespace Mfma4x4PingPong{
         // must not diverge within a wave
         if(output_row_wave < group_size && output_col_wave < seq_len){
             int parity = 1;
-            // bool pingPong = true;
-            // float16_t* a_load = pingPong ? shared_a2 : shared_a;
-            // float16_t* a_compute = pingPong ? shared_a : shared_a2;
-            // float16_t* b_load = pingPong ? shared_b2 : shared_b;
-            // float16_t* b_compute = pingPong ? shared_b : shared_b2;
 
             if (threadIdx.x < 4){
                 load_queries(shared_a, query + (0 * lda + output_row_wave), lda);
@@ -573,12 +568,7 @@ namespace Mfma4x4PingPong{
             __syncthreads();
 
             // step through the K loop
-            for(int i = 1; i < hidden_dim; i+= BLOCK_K){
-
-                // a_load = pingPong ? shared_a2 : shared_a;
-                // a_compute = pingPong ? shared_a : shared_a2;
-                // b_load = pingPong ? shared_b2 : shared_b;
-                // b_compute = pingPong ? shared_b : shared_b2;
+            for(int i = BLOCK_K; i < hidden_dim; i+= BLOCK_K){
 
                 // when we call load_queries we are already pointing at the correct upper left
                 // We are storing queries in row-major order in LDS
@@ -587,13 +577,11 @@ namespace Mfma4x4PingPong{
 
                 if (threadIdx.x < 4){
                     load_queries(shared_a + (parity * BLOCK_M * BLOCK_K), query + (i * lda + output_row_wave), lda);
-                    // load_queries(a_load, query + (i * lda + output_row_wave), lda);
                 }
 
                 // Just have each wave load it's own matrix -> each thread loads 8 bytes
                 // when we call this we are pointing at the correct row/col
                 // keys is stored in row-major in HBM and stored as col-major in s_mem
-                // load_keys_quad(b_load + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), keys + (i * ldb + output_col_wave), ldb);
                 load_keys_quad(shared_b + (parity * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), keys + (i * ldb + output_col_wave), ldb);
 
                 // Need to point to starting corner of two rows we want to load
@@ -604,7 +592,6 @@ namespace Mfma4x4PingPong{
                 // However, A block still needs to go into LDS because each wave msut use it (as mfma instruciton is per wave)
                 if (threadIdx.x % WAVE_SIZE < 4){
                     fragA = load_queries_4x4_col_major(shared_a + ((1 - parity) * BLOCK_M * BLOCK_K), BLOCK_K, local_wave_id);
-                    // fragA = load_queries_4x4_col_major(a_compute, BLOCK_K, local_wave_id);
                 }
 
                 // B is in row-major order
@@ -613,7 +600,6 @@ namespace Mfma4x4PingPong{
                 // i.e. do a num rows * sizeof(rows) offset  
 
                 fragB = load_keys_4x4_row_major(shared_b + ((1 - parity) * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
-                // fragB = load_keys_4x4_row_major(b_compute + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
 
                 // __syncthreads();
                 // Acumulate the ouput 16x16 blocks
@@ -623,13 +609,12 @@ namespace Mfma4x4PingPong{
 
                 // switch parity bit
                 parity = parity ? 0 : 1;
-                // pingPong = !pingPong;
             }
  
             if (threadIdx.x % WAVE_SIZE < 4){
-                fragA = load_queries_4x4_col_major(shared_a + (parity * BLOCK_M * BLOCK_K), BLOCK_K, local_wave_id);
+                fragA = load_queries_4x4_col_major(shared_a + ((1 - parity) * BLOCK_M * BLOCK_K), BLOCK_K, local_wave_id);
             }
-            fragB = load_keys_4x4_row_major(shared_b + (parity * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
+            fragB = load_keys_4x4_row_major(shared_b + ((1 - parity) * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
             fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);
             __syncthreads();
 
