@@ -287,13 +287,15 @@ namespace Mfma4x4 {
                 // keys gives us the start of matrix, ccol indexes into the row 
                 // i * ldb calculates (block_k (col dimension)* size of row)
                 // i.e. do a num rows * sizeof(rows) offset  
-              
+
                 fragB = load_keys_4x4_row_major(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K);
                
+                __syncthreads();
+
                 // Acumulate the ouput 16x16 blocks
                 // fragAcc holds 4 f32_t (row major order)
                 fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);
-
+                __syncthreads();
 
             }
             store_attention_pattern_4x4_col_major(attention_output + (output_col_wave* ldd + output_row_wave), fragAcc, ldd);
@@ -340,7 +342,7 @@ namespace Mfma4x4 {
         return fragA;
     }
 
-    __device__ BFragT load_keys_4x4_row_major(float16_t const* input, int ld, int wave_id)
+    __device__ BFragT load_keys_4x4_row_major(float16_t const* input, int ld)
     {
         static constexpr uint32_t VW = vectorSize(BFragT{});
         static constexpr uint32_t Dim = BLOCK_N * BLOCK_B;
@@ -594,7 +596,7 @@ namespace Mfma4x4PingPong{
                 // i * ldb calculates (block_k (col dimension)* size of row)
                 // i.e. do a num rows * sizeof(rows) offset  
 
-                fragB = load_keys_4x4_row_major(shared_b + ((1 - parity) * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
+                fragB = load_keys_4x4_row_major(shared_b + ((1 - parity) * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K);
 
                 // __syncthreads();
                 // Acumulate the ouput 16x16 blocks
@@ -609,7 +611,7 @@ namespace Mfma4x4PingPong{
             if (threadIdx.x % WAVE_SIZE < 4){
                 fragA = load_queries_4x4_col_major(shared_a + ((1 - parity) * BLOCK_M * BLOCK_K), BLOCK_K, local_wave_id);
             }
-            fragB = load_keys_4x4_row_major(shared_b + ((1 - parity) * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
+            fragB = load_keys_4x4_row_major(shared_b + ((1 - parity) * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K);
             fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);
             __syncthreads();
 
