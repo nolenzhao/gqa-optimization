@@ -186,7 +186,7 @@ namespace Naive {
 // We need to fill repeated values into the fragments since we only have 16 values 
 // These can fit in 4 lanes. We repllicate this through all 64 lanes. 
 // This can be done using the mfma control bits 
-namespace Mfma4x4{
+namespace Mfma4x4 {
 
     __global__ void gqa_packed(
         float16_t const* query, 
@@ -261,6 +261,8 @@ namespace Mfma4x4{
                 // We are storing queries in row-major order in LDS
                 // We load from HBM as col-major
                 // only need to load a 4x4f16 -> 256 bits -> use four threads to load  
+
+                __syncthreads();
                 
                 if (threadIdx.x < 4){
                     load_queries(shared_a, query + (i * lda + output_row_wave), lda);
@@ -285,10 +287,9 @@ namespace Mfma4x4{
                 // keys gives us the start of matrix, ccol indexes into the row 
                 // i * ldb calculates (block_k (col dimension)* size of row)
                 // i.e. do a num rows * sizeof(rows) offset  
-
-                fragB = load_keys_4x4_row_major(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K, local_wave_id);
-
-                 __syncthreads();
+              
+                fragB = load_keys_4x4_row_major(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), BLOCK_K);
+               
                 // Acumulate the ouput 16x16 blocks
                 // fragAcc holds 4 f32_t (row major order)
                 fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);
@@ -656,9 +657,10 @@ namespace Mfma4x4PingPong{
         return fragA;
     }
 
-    __device__ BFragT load_keys_4x4_row_major(float16_t const* input, int ld, int wave_id)
+    __device__ BFragT load_keys_4x4_row_major(float16_t const* input, int ld)
     {
         static constexpr uint32_t VW = vectorSize(BFragT{});
+
         static constexpr uint32_t Dim = BLOCK_N * BLOCK_B;
 
         // To start the loading process, let's visualize in 2D coords.
@@ -728,10 +730,12 @@ namespace Mfma4x4PingPong{
         // when transposes the col values are contiguous where the row values are not
         auto kOffset = col_major(stepCoord2D, ld);
 
-        output[startOffset] = accum[0]; 
-        output[startOffset + kOffset] = accum[1];
-        output[startOffset + 2 * kOffset] = accum[2];
-        output[startOffset + 3 * kOffset] = accum[3];
+        *((AccumFragT*)(output + startOffset)) = accum;
+
+        // output[startOffset] = accum[0]; 
+        // output[startOffset + kOffset] = accum[1];
+        // output[startOffset + 2 * kOffset] = accum[2];
+        // output[startOffset + 3 * kOffset] = accum[3];
     }
 
 
@@ -748,10 +752,11 @@ namespace Mfma4x4PingPong{
         // | 5 | 6 | 7 | 8 | 
         // | 9 | 10| 11| 12|
         // |13 | 14| 15| 16|
+        int local_t_id = threadIdx.x % WAVE_SIZE;
 
         // Not sure if this is technically correct, but works
-        auto startCoord2D = std::make_pair((threadIdx.x / Dim) * 4,  // row
-                                            threadIdx.x % Dim); // col
+        auto startCoord2D = std::make_pair((local_t_id / Dim) * 4,  // row
+                                            local_t_id % Dim); // col
 
         // We want to step down since we're loading a col per thread
         auto stepCoord2D = std::make_pair(1u, 0u);
@@ -800,7 +805,294 @@ namespace Mfma4x4PingPong{
 
 
 }
+namespace Mfma4x4HalfLDS{
 
+    __global__ void gqa_packed(
+        float16_t const* query, 
+        float16_t const* keys, 
+        float32_t* attention_output,
+        int group_size, 
+        int seq_len, 
+        int hidden_dim, 
+        int lda, 
+        int ldb, 
+        int ldd) {
+
+        // for a 1x4 output matrix, need to load one rows of A
+        // we have 4 waves in this t_block and they should be growing in y direction
+        
+        //load One block of A every iteration
+        __shared__ float16_t shared_a[Mfma4x4::BLOCK_M * Mfma4x4::BLOCK_K];
+
+        // load 4 blocks of B every iteration to perform mfma with single A 
+        // Even though these values (for group_size < 16 and 16x16 mfma) are never used again 
+        // We should use LDS to reduce register pressure
+        // Just init to 4 16x16 
+        // It would be nice to dynamically allocate LDS depending on the seq_len size, but that would 
+        // require variable LDS size for diff threadBlocks
+
+        auto fragA = Mfma4x4::AFragT{};
+        auto fragB = Mfma4x4::BFragT{};
+        auto fragAcc = Mfma4x4::AccumFragT{};
+        fill_frag(fragAcc, 0.0f);
+
+        // Local here is local to the threadBlock
+
+        // find which wave we are in (there are 4 now)
+        int local_wave_id = threadIdx.x / WAVE_SIZE;
+        // partition into row/col; we wil alwyas have one row and (4?) cols
+        int local_wave_row = local_wave_id / Mfma4x4::WAVES_PER_BLOCK;
+        int local_wave_col = local_wave_id % (Mfma4x4::WAVES_PER_BLOCK);
+
+        // Each wave computes 16 blocks in 4x4mfma -> find which block_id we are in within the the given wave
+        int local_block_id = (local_wave_id * Mfma4x4::BLOCK_B) + (threadIdx.x % WAVE_SIZE) / Mfma4x4::THREADS_PER_BLOCK;
+        int local_block_row = local_block_id / Mfma4x4::BLOCK_B_PER_BLOCK;
+        int local_block_col = local_block_id % Mfma4x4::BLOCK_B_PER_BLOCK; 
+
+        // Global here is in reference to the entire kernel launch accounting for all threadBlocks
+        // Find which global wave this is. For each block in the output matrix, there is a corresponding wave
+        int global_wave_row = blockIdx.x + local_wave_row;
+        int global_wave_col = (blockIdx.y * Mfma4x4::WAVES_PER_BLOCK) + local_wave_col;
+
+        // Find which global block this is 
+        int global_block_row = blockIdx.x + local_block_row;
+        int global_block_col = (blockIdx.y * Mfma4x4::BLOCK_B_PER_BLOCK) + local_block_col; 
+
+        // This gets the absolute row/col of upperleft C block coord that this threadBlock computes
+        int output_row_wave = global_wave_row * Mfma4x4::BLOCK_M;
+        int output_col_wave = global_wave_col * Mfma4x4::BLOCK_B * Mfma4x4::BLOCK_N;
+
+        // This gets the absolute row/col of the upperleft C block coord that this block computes
+        int output_row_bblock = global_block_row * Mfma4x4::BLOCK_M;
+        int output_col_bblock = global_block_col * Mfma4x4::BLOCK_N;
+
+        // NOTE: we can think of BLOCK_B as an extension of y dimension on waves
+        // And think of WAVES_PER_BLOCK as an extension of y dimension on thread_blocks
+
+        // We need to check wave indexing here, not bblock indexing since threads 
+        // must not diverge within a wave
+        if(output_row_wave < group_size && output_col_wave < seq_len){
+            // step through the K loop
+            for(int i = 0; i < hidden_dim; i+= Mfma4x4::BLOCK_K){
+
+                // when we call load_queries we are already pointing at the correct upper left
+                // We are storing queries in row-major order in LDS
+                // We load from HBM as col-major
+                // only need to load a 4x4f16 -> 256 bits -> use four threads to load  
+
+                __syncthreads();
+                
+                if (threadIdx.x < 4){
+                    Mfma4x4::load_queries(shared_a, query + (i * lda + output_row_wave), lda);
+                }
+
+                // Just have each wave load it's own matrix -> each thread loads 8 bytes
+                // when we call this we are pointing at the correct row/col
+                // keys is stored in row-major in HBM and stored as col-major in s_mem
+                // load_keys_quad(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), keys + (i * ldb + output_col_wave), ldb);
+
+                __syncthreads();
+                // Need to point to starting corner of two rows we want to load
+
+                // shared_a has been loaded as row-major so the load to registers is correctly col-major
+                // We only need to fill threads 0-3 per wave since we can braodcast with CBSZ and ABI
+                // However, A block still needs to go into LDS because each wave msut use it (as mfma instruciton is per wave)
+                if (threadIdx.x % WAVE_SIZE < 4){
+                    fragA = Mfma4x4::load_queries_4x4_col_major(shared_a , Mfma4x4::BLOCK_K, local_wave_id);
+                }
+
+                // B is in row-major order
+                // keys gives us the start of matrix, ccol indexes into the row 
+                // i * ldb calculates (block_k (col dimension)* size of row)
+                // i.e. do a num rows * sizeof(rows) offset  
+
+                fragB = load_keys_4x4_row_major(keys + (i * ldb + output_col_wave), ldb);
+
+               
+                // Acumulate the ouput 16x16 blocks
+                // fragAcc holds 4 f32_t (row major order)
+                fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);
+
+
+            }
+            Mfma4x4::store_attention_pattern_4x4_col_major(attention_output + (output_col_wave* ldd + output_row_wave), fragAcc, ldd);
+        }
+
+    }
+
+
+    __device__ Mfma4x4::BFragT load_keys_4x4_row_major(float16_t const* input, int ld)
+    {
+        static constexpr uint32_t VW = vectorSize(Mfma4x4::BFragT{});
+
+        static constexpr uint32_t Dim = Mfma4x4::BLOCK_N * Mfma4x4::BLOCK_B;
+
+        // To start the loading process, let's visualize in 2D coords.
+        // Each thread will load 4 elements.
+        // We need to know where they start, and where the next elements are.
+
+        // We find the context of hte block loaded
+        int local_t_id = threadIdx.x % WAVE_SIZE;
+
+        // 256 threads -> 0-63 t_id
+        // What we're really doing here is making the startCoord corresponds to the 
+        // "row" of SIMD within that row which row we have
+        // we're calculating the start offset of which row, {0 | 4 | 8 | 12}
+        // of the 16x16 matrix we start at 
+        auto startCoord2D = std::make_pair((local_t_id / Dim) * VW, // Row
+                                            (local_t_id % Dim));   // Col
+        // row, column step here
+        auto stepCoord2D = std::make_pair(1u, 0u);
+
+        // Flatten to 1D row_major offsets.
+        // If we have row-major data, to step down a row, need to multiply by ld, 
+        // then access into that row with coord.second
+
+        // This gets the start idx at each block of 4 rows (since our VW is 4)
+        // we can only store 4 rows in each SIMD
+        auto startOffset = row_major(startCoord2D, ld);
+        // kOffset is 16 since to go down a row, need to go 16 offset in row-major
+        auto kOffset = row_major(stepCoord2D, ld);
+
+        // If you notice carefully, kOffset != 1.
+        // This means the following is vector is loaded with 4 non-contiguous offsets,
+        // which the compiler will separate into 4 different global_load_short instructions.
+        auto fragB = Mfma4x4::BFragT
+        {
+            input[startOffset],               // v[0] = Reg 0 [0:15]
+            input[startOffset + kOffset],     // v[1] = Reg 0 [16:31]
+            input[startOffset + 2 * kOffset], // v[2] = Reg 1 [0:15]
+            input[startOffset + 3 * kOffset], // v[3] = Reg 1 [16:31]
+        };
+
+        return fragB;
+    }
+
+}
+
+namespace Mfma4x4Occup{
+
+    __global__ void gqa_packed(
+        float16_t const* query, 
+        float16_t const* keys, 
+        float32_t* attention_output,
+        int group_size, 
+        int seq_len, 
+        int hidden_dim, 
+        int lda, 
+        int ldb, 
+        int ldd) {
+
+        // for a 1x4 output matrix, need to load one rows of A
+        // we have 4 waves in this t_block and they should be growing in y direction
+        
+        //load One block of A every iteration
+        __shared__ float16_t shared_a[BLOCK_M * BLOCK_K * BLOCK_B_PER_BLOCK_X];
+
+        // load 4 blocks of B every iteration to perform mfma with single A 
+        // Even though these values (for group_size < 16 and 16x16 mfma) are never used again 
+        // We should use LDS to reduce register pressure
+        // Just init to 4 16x16 
+        // It would be nice to dynamically allocate LDS depending on the seq_len size, but that would 
+        // require variable LDS size for diff threadBlocks
+        __shared__ float16_t shared_b[BLOCK_K * BLOCK_N * BLOCK_B_PER_BLOCK_Y]; 
+
+        auto fragA = Mfma4x4::AFragT{};
+        auto fragB = Mfma4x4::BFragT{};
+        auto fragAcc = Mfma4x4::AccumFragT{};
+        fill_frag(fragAcc, 0.0f);
+
+        // Local here is local to the threadBlock
+
+        // find which wave we are in (there are 8 now)
+        // pretend they're arranged in row major when computing output
+        // | 0 | 1 | 2 | 3 | 
+        // | 4 | 5 | 6 | 7 | 
+        int local_wave_id = threadIdx.x / WAVE_SIZE;
+        // partition into row/col; we wil alwyas have one row and (4?) cols
+        // idx per afforementioned row-major order
+        int local_wave_row = local_wave_id / WAVES_PER_BLOCK_Y;
+        int local_wave_col = local_wave_id % (WAVES_PER_BLOCK_Y);
+
+        // Each wave computes 16 blocks in 4x4mfma -> find which block_id we are in within the the given wave
+        // Also order blocks row-major
+        // | 0 | 1 | 2 | ... | 63 | 
+        // | 64| 65| 66| ... | 127|
+        int local_block_id = (local_wave_id * BLOCK_B_Y) + (threadIdx.x % WAVE_SIZE) / THREADS_PER_BLOCK;
+        int local_block_row = local_block_id / BLOCK_B_PER_BLOCK_Y;
+        int local_block_col = local_block_id % BLOCK_B_PER_BLOCK_Y; 
+
+        // Global here is in reference to the entire kernel launch accounting for all threadBlocks
+        // Find which global wave this is. For each block in the output matrix, there is a corresponding wave
+        int global_wave_row = (blockIdx.x * WAVES_PER_BLOCK_X) + local_wave_row;
+        int global_wave_col = (blockIdx.y * WAVES_PER_BLOCK_Y) + local_wave_col;
+
+        // Find which global block that this is wave is associated with
+        int global_block_row = (blockIdx.x * BLOCK_B_PER_BLOCK_X)+ local_block_row;
+        int global_block_col = (blockIdx.y * BLOCK_B_PER_BLOCK_Y) + local_block_col; 
+
+        // This gets the absolute row/col of upperleft C block coord that this wave computes
+        int output_row_wave = global_wave_row *  BLOCK_B_X * BLOCK_M;
+        int output_col_wave = global_wave_col * BLOCK_B_Y * BLOCK_N;
+
+        // This gets the absolute row/col of the upperleft C block coord that this block computes
+        int output_row_bblock = global_block_row * BLOCK_M;
+        int output_col_bblock = global_block_col * BLOCK_N;
+
+        // We need to check wave indexing here, not bblock indexing since threads 
+        // must not diverge within a wave and the mfma instruction is per-wave
+        if(output_row_wave < group_size && output_col_wave < seq_len){
+            // step through the K loop
+            for(int i = 0; i < hidden_dim; i+= BLOCK_K){
+
+                // when we call load_queries we are already pointing at the correct upper left
+                // We are storing queries in row-major order in LDS
+                // We load from HBM as col-major
+                // only need to load a 4x4f16 -> 256 bits -> use four threads to load  
+
+                __syncthreads();
+                
+                // This single load gathers the block_b for all blocks AND waves sharing the piece
+                // we need to load the top and bottom depending on which threads we are with
+
+                if (local_block_col == 0)
+                    Mfma4x4::load_queries(shared_a + local_wave_row * (BLOCK_M * BLOCK_K), query + (i * lda + output_row_wave), lda);
+
+                // Just have each wave load it's own matrix -> each thread loads 8 bytes
+                // when we call this we are pointing at the correct row/col
+                // keys is stored in row-major in HBM and stored as col-major in s_mem
+                // Pass in this wave's stuff
+                if(local_wave_row == 0)
+                    Mfma4x4::load_keys_quad(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B_Y), keys + (i * ldb + output_col_wave), ldb);
+
+                __syncthreads();
+                // Need to point to starting corner of two rows we want to load
+
+                // shared_a has been loaded as row-major so the load to registers is correctly col-major
+                // We only need to fill threads 0-3 per wave since we can braodcast with CBSZ and ABI
+                // However, A block still needs to go into LDS because each wave msut use it (as mfma instruciton is per wave)
+                if (threadIdx.x % WAVE_SIZE < 4){
+                    fragA = Mfma4x4::load_queries_4x4_col_major(shared_a + local_wave_row * (BLOCK_M * BLOCK_K), BLOCK_K, local_wave_id);
+                }
+
+                // B is in row-major order
+                // keys gives us the start of matrix, ccol indexes into the row 
+                // i * ldb calculates (block_k (col dimension)* size of row)
+                // i.e. do a num rows * sizeof(rows) offset  
+                // Point to this waves thing! We index according ot block inside the function
+                fragB = Mfma4x4::load_keys_4x4_row_major(shared_b + local_wave_col * (BLOCK_K * BLOCK_N * BLOCK_B_Y), BLOCK_K);
+               
+                // Acumulate the ouput 16x16 blocks
+                // fragAcc holds 4 f32_t (row major order)
+                fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);
+
+            }
+            Mfma4x4::store_attention_pattern_4x4_col_major(attention_output + (output_col_wave* ldd + output_row_wave), fragAcc, ldd);
+        }
+
+    }
+
+}
 
 namespace Mfma16x16{
 
@@ -823,11 +1115,9 @@ namespace Mfma16x16{
         // load 4 blocks of B every iteration to perform mfma with single A 
         // Even though these values (for group_size < 16 and 16x16 mfma) are never used again 
         // We should use LDS to reduce register pressure
+        __shared__ float16_t shared_b[BLOCK_K * BLOCK_N * WAVES_PER_BLOCK];
         
         // Just init to 4 16x16 
-        // It would be nice to dynamically allocate LDS depending on the seq_len size, but that would 
-        // require variable LDS size for diff threadBlocks
-        __shared__ float16_t shared_b[BLOCK_K * BLOCK_N * WAVES_PER_BLOCK]; 
 
         auto fragA = AFragT{};
         auto fragB = BFragT{};
@@ -844,7 +1134,7 @@ namespace Mfma16x16{
         auto waveGridX = blockIdx.x + wave_row;
         auto waveGridY = (blockIdx.y * WAVES_PER_BLOCK) + wave_col;
 
-        // This gets the absolute row/col of upperleft C block coord that this threadBlock computes
+        // This gets the absolute row/col of upperleft C block coord that this wave computes
         auto cRow = waveGridX * BLOCK_M;
         auto cCol = waveGridY * BLOCK_N;
 
@@ -855,14 +1145,13 @@ namespace Mfma16x16{
 
                 // assuming 128-bit optimal loads per thread we only need one wave to load 
                 // the 16x16 A matrix -> we shuould try and load double 
-                // Do we really need to load B into LDS? only really need to reuse A right?
                 // when we call load_queries we are already pointing at the correct upper left
+                __syncthreads();
+
                 if (wave_id == 0){
                     load_queries(shared_a, query + (i * lda + cRow), lda);
                 }
-                __syncthreads();
-                // Just have each wave load it's own matrix -> each thread loads 8 bytes
-                // when we call this we are pointing at the correct row/col
+
                 load_keys_quad(shared_b + (wave_id * BLOCK_K * BLOCK_N), keys + (i * ldb + cCol), ldb);
 
                 __syncthreads();
@@ -870,17 +1159,15 @@ namespace Mfma16x16{
 
                 // Have each thread load its fragment (4 fp16's in each frag) 
                 // shared_a has been loaded as row-major so the load to registers is correctly col-major
-                fragA = load_queries_16x16_col_major(shared_a , BLOCK_K, wave_id);
+                fragA = load_queries_16x16_col_major(shared_a , BLOCK_K);
                 // B is in row-major order
                 // keys gives us the start of matrix, ccol indexes into the row 
                 // i * ldb calculates (block_k (col dimension)* size of row)
                 // i.e. do a num rows * sizeof(rows) offset  
 
-                // <<!---You're trying to have every thread use the same pointer to shared_b---!>
-                // Instead you should properly point to the correct segment and then use local_t_id to idx
-                // so use the info you have in this func (wave_id, etc. to point to correct offset into s_mem)
-                // the same cna be said for loading fragA, just point to the correct segment using parity offset
-                fragB = load_keys_16x16_row_major(shared_b + (wave_id * BLOCK_K * BLOCK_N), BLOCK_K, wave_id);
+                // stored row-major in HBM, we need this to be row-major in VGPR's
+                // seems like load to LDS should allow contiguous loads -> better?
+                fragB = load_keys_16x16_row_major(shared_b + (wave_id * BLOCK_K * BLOCK_N), BLOCK_K);
 
                 // Acumulate the ouput 16x16 blocks
                 // fragAcc holds 4 f32_t (row major order)
@@ -893,7 +1180,7 @@ namespace Mfma16x16{
         }
     }
 
-    __device__ AFragT load_queries_16x16_col_major(float16_t const* input, int ld, int wave_id){
+    __device__ AFragT load_queries_16x16_col_major(float16_t const* input, int ld){
 
         static constexpr uint32_t VW = vectorSize(AFragT{});
         static constexpr uint32_t Dim = BLOCK_M;
@@ -902,7 +1189,7 @@ namespace Mfma16x16{
         // To start the loading process, let's visualize in 2D coords.
         // Each thread will load 4 elements at maximum.
         // We need to know where they start, and where the next elements are.
-        int local_t_id = threadIdx.x - wave_id * WAVE_SIZE;
+        int local_t_id = threadIdx.x % WAVE_SIZE;
 
         // Since we're storing this column-neighbor from column-major data 
         // we can only fit 4 columns in a SIMD so we calculate the offset between 
@@ -933,7 +1220,7 @@ namespace Mfma16x16{
         return fragA;
     }
 
-    __device__ BFragT load_keys_16x16_row_major(float16_t const* input, int ld, int wave_id) {
+    __device__ BFragT load_keys_16x16_row_major(float16_t const* input, int ld) {
 
         static constexpr uint32_t VW = vectorSize(BFragT{});
         static constexpr uint32_t Dim = BLOCK_N;
@@ -1066,6 +1353,135 @@ namespace Mfma16x16{
 }
 
 
+
+namespace Mfma16x16HalfLDS{
+
+    __global__ void gqa_packed(
+        float16_t const* query, 
+        float16_t const* keys, 
+        float32_t* attention_output,
+        int group_size, 
+        int seq_len, 
+        int hidden_dim, 
+        int lda, 
+        int ldb, 
+        int ldd) {
+
+        // for a 1x4 output matrix, need to load one rows of A
+        // we have 4 waves in this t_block and they should be growing in y direction
+        
+        //load One block of A every iteration
+        __shared__ float16_t shared_a[Mfma16x16::BLOCK_M * Mfma16x16::BLOCK_K];
+        // load 4 blocks of B every iteration to perform mfma with single A 
+        // Even though these values (for group_size < 16 and 16x16 mfma) are never used again 
+        // We should use LDS to reduce register pressure
+        
+        // Just init to 4 16x16 
+
+        auto fragA = Mfma16x16::AFragT{};
+        auto fragB = Mfma16x16::BFragT{};
+        auto fragAcc = Mfma16x16::AccumFragT{};
+        fill_frag(fragAcc, 0.0f);
+
+        // find which wave we are in (there are 4 now)
+        int wave_id = threadIdx.x / WAVE_SIZE;
+        // partition into row/col; we wil alwyas have one row and (4?) cols
+        int wave_row = wave_id / (Mfma16x16::WAVES_PER_BLOCK * WAVE_SIZE);
+        int wave_col = wave_id % (Mfma16x16::WAVES_PER_BLOCK);
+
+        // Find which global wave this is. For each block in the output matrix, there is a corresponding wave
+        auto waveGridX = blockIdx.x + wave_row;
+        auto waveGridY = (blockIdx.y * Mfma16x16::WAVES_PER_BLOCK) + wave_col;
+
+        // This gets the absolute row/col of upperleft C block coord that this wave computes
+        auto cRow = waveGridX * Mfma16x16::BLOCK_M;
+        auto cCol = waveGridY * Mfma16x16::BLOCK_N;
+
+
+        if(cRow < group_size && cCol < seq_len){
+            // step through the K loop
+            for(int i = 0; i < hidden_dim; i+= Mfma16x16::BLOCK_K){
+
+                // assuming 128-bit optimal loads per thread we only need one wave to load 
+                // the 16x16 A matrix -> we shuould try and load double 
+                // when we call load_queries we are already pointing at the correct upper left
+                __syncthreads();
+
+                if (wave_id == 0){
+                    Mfma16x16::load_queries(shared_a, query + (i * lda + cRow), lda);
+                }
+
+                __syncthreads();
+                // Need to point to starting corner of two rows we want to load
+
+                // Have each thread load its fragment (4 fp16's in each frag) 
+                // shared_a has been loaded as row-major so the load to registers is correctly col-major
+                fragA = Mfma16x16::load_queries_16x16_col_major(shared_a , Mfma16x16::BLOCK_K);
+                // B is in row-major order
+                // keys gives us the start of matrix, ccol indexes into the row 
+                // i * ldb calculates (block_k (col dimension)* size of row)
+                // i.e. do a num rows * sizeof(rows) offset  
+
+                // stored row-major in HBM, we need this to be row-major in VGPR's
+                // seems like load to LDS should allow contiguous loads -> better?
+                fragB = load_keys_16x16_row_major(keys + (i * ldb + cCol), ldb);
+
+                // Acumulate the ouput 16x16 blocks
+                // fragAcc holds 4 f32_t (row major order)
+
+                fragAcc = __builtin_amdgcn_mfma_f32_16x16x16f16(fragA, fragB, fragAcc, 0, 0, 0);
+
+
+            }
+            Mfma16x16::store_attention_pattern_16x16_col_major(attention_output + (cCol * ldd + cRow), fragAcc, ldd);
+        }
+    }
+
+    __device__ Mfma16x16::BFragT load_keys_16x16_row_major(float16_t const* input, int ld) {
+
+        static constexpr uint32_t VW = vectorSize(Mfma16x16::BFragT{});
+        static constexpr uint32_t Dim = Mfma16x16::BLOCK_N;
+
+        // To start the loading process, let's visualize in 2D coords.
+        // Each thread will load 4 elements.
+        // We need to know where they start, and where the next elements are.
+        int local_t_id = threadIdx.x % WAVE_SIZE;
+
+        // 256 threads -> 0-63 t_id
+        // What we're really doing here is making the startCoord corresponds to the 
+        // "row" of SIMD within that row which row we have
+        // we're calculating the start offset of which row, {0 | 4 | 8 | 12}
+        // of the 16x16 matrix we start at 
+        auto startCoord2D = std::make_pair((local_t_id / Dim) * VW, // Row
+                                            (local_t_id % Dim));   // Col
+        // row, column step here
+        auto stepCoord2D = std::make_pair(1u, 0u);
+
+        // Flatten to 1D row_major offsets.
+        // If we have row-major data, to step down a row, need to multiply by ld, 
+        // then access into that row with coord.second
+
+        // This gets the start idx at each block of 4 rows (since our VW is 4)
+        // we can only store 4 rows in each SIMD
+        auto startOffset = row_major(startCoord2D, ld);
+        // kOffset is 16 since to go down a row, need to go 16 offset in row-major
+        auto kOffset = row_major(stepCoord2D, ld);
+
+        // If you notice carefully, kOffset != 1.
+        // This means the following is vector is loaded with 4 non-contiguous offsets,
+        // which the compiler will separate into 4 different global_load_short instructions.
+        auto fragB = Mfma16x16::BFragT
+        {
+            input[startOffset],               // v[0] = Reg 0 [0:15]
+            input[startOffset + kOffset],     // v[1] = Reg 0 [16:31]
+            input[startOffset + 2 * kOffset], // v[2] = Reg 1 [0:15]
+            input[startOffset + 3 * kOffset], // v[3] = Reg 1 [16:31]
+        };
+
+        return fragB;
+    }
+
+}
 
 
 __device__ int col_major(const std::pair<int, int>& coord, int ld){
