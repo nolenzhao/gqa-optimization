@@ -56,7 +56,10 @@ namespace Mfma16x16HalfLDS{
 }
 
 namespace Mfma4x4Occup{
+    __global__ void gqa_packed(float16_t const* queries, float16_t const* key_mat, float32_t* attention_output, int group_size, int seq_len, int hidden_dim, int lda, int ldb, int ldd);
+}
 
+namespace Mfma4x4HalfLDSOccup{
     __global__ void gqa_packed(float16_t const* queries, float16_t const* key_mat, float32_t* attention_output, int group_size, int seq_len, int hidden_dim, int lda, int ldb, int ldd);
 }
 
