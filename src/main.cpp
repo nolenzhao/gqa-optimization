@@ -376,7 +376,7 @@ int main(int argc, char* argv[]) {
         float32_t* cpu_output = (float32_t*)malloc(sizeof(float32_t) * PADDED_GROUP_SIZE * PADDED_SEQ_LEN);
         cpu_gemm(queries.data(), keys.data(), cpu_output, PADDED_GROUP_SIZE, PADDED_SEQ_LEN, PADDED_HIDDEN_DIM);
 
-        time_kernel("4x4-LDS Occup", 
+        time_kernel("4x4-LDS pingpong", 
         [&](){
             gqa_packed<<<gridDim, blockDim>>>(
                 d_queries, 
