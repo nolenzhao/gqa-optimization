@@ -402,7 +402,7 @@ int main(int argc, char* argv[]) {
         hipFree(d_attention_output);
     }
     
-    if (std::stoi(argv[7]))
+    if (std::stoi(argv[8]))
     {
         using namespace Mfma4x4HalfLDSOccup;
         std::cout << "\n=== 4x4 Reduce-LDS Occup ===\n";
