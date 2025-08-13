@@ -503,7 +503,6 @@ namespace Mfma4x4PingPong{
         
         //load One block of A every iteration
         __shared__ float16_t shared_a[2 * BLOCK_M * BLOCK_K];
-        __shared__ float16_t shared_a2[BLOCK_M * BLOCK_K];
 
         // load 4 blocks of B every iteration to perform mfma with single A 
         // Even though these values (for group_size < 16 and 16x16 mfma) are never used again 
@@ -512,7 +511,6 @@ namespace Mfma4x4PingPong{
         // It would be nice to dynamically allocate LDS depending on the seq_len size, but that would 
         // require variable LDS size for diff threadBlocks
         __shared__ float16_t shared_b[2 * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK];
-        __shared__ float16_t shared_b2[BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK];
 
         auto fragA = AFragT{};
         auto fragB = BFragT{};
