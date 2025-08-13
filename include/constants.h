@@ -50,6 +50,27 @@ namespace Mfma4x4{
     inline constexpr int PADDED_SEQ_LEN = ((SEQ_LEN + (BLOCK_N * BLOCK_B_PER_BLOCK) - 1) / (BLOCK_N * BLOCK_B_PER_BLOCK)) * (BLOCK_N * BLOCK_B_PER_BLOCK);
 }
 
+namespace Mfma4x4PingPong{
+    // 4x4x4f16_16B mfma
+    inline constexpr int WAVES_PER_BLOCK = 4;
+    inline constexpr int THREADS_PER_BLOCK = 4;
+    inline constexpr int T_BLOCK_X = WAVES_PER_BLOCK * WAVE_SIZE;
+    inline constexpr int T_BLOCK_Y = 1;
+    inline constexpr int BLOCK_M = 4;
+    inline constexpr int BLOCK_N = 4;
+    inline constexpr int BLOCK_K = 4;
+    // block_b should be specifies as 16 in y direction and 1 in x direction
+    inline constexpr int BLOCK_B = 16;
+    // 16 * 4  = 64 
+    inline constexpr int BLOCK_B_PER_BLOCK = BLOCK_B * WAVES_PER_BLOCK;
+    // 1 * 2 = 2
+    // Calculate padded dimensions 
+    // At min each thradblock will use 8 waves to compute a 8 x 256, so even with one threadblock min output needs to be padded up
+    inline constexpr int PADDED_GROUP_SIZE = ((GROUP_SIZE + BLOCK_M - 1) / BLOCK_M) * BLOCK_M;
+    inline constexpr int PADDED_HIDDEN_DIM = ((HIDDEN_DIM + BLOCK_K - 1) / BLOCK_K) * BLOCK_K;
+    inline constexpr int PADDED_SEQ_LEN = ((SEQ_LEN + (BLOCK_N * BLOCK_B_PER_BLOCK) - 1) / (BLOCK_N * BLOCK_B_PER_BLOCK)) * (BLOCK_N * BLOCK_B_PER_BLOCK);
+}
+
 namespace Mfma4x4HalfLDS{
     // 4x4x4f16_16B mfma
     inline constexpr int WAVES_PER_BLOCK = 4;
@@ -92,8 +113,8 @@ namespace Mfma4x4Occup{
     inline constexpr int PADDED_HIDDEN_DIM = ((HIDDEN_DIM + BLOCK_K - 1) / BLOCK_K) * BLOCK_K;
     inline constexpr int PADDED_SEQ_LEN = ((SEQ_LEN + (BLOCK_N * BLOCK_B_PER_BLOCK_Y) - 1) / (BLOCK_N * BLOCK_B_PER_BLOCK_Y)) * (BLOCK_N * BLOCK_B_PER_BLOCK_Y);
 }
-namespace Mfma16x16{
 
+namespace Mfma16x16{
     inline constexpr int WAVES_PER_BLOCK = 4;
     inline constexpr int THREADS_PER_BLOCK = 4;
     inline constexpr int T_BLOCK_X = WAVES_PER_BLOCK * WAVE_SIZE;
@@ -111,8 +132,8 @@ namespace Mfma16x16{
     inline constexpr int PADDED_SEQ_LEN = ((SEQ_LEN + (BLOCK_N * BLOCK_B_PER_BLOCK) - 1) / (BLOCK_N * BLOCK_B_PER_BLOCK)) * (BLOCK_N * BLOCK_B_PER_BLOCK);
 
 }
-namespace Mfma16x16HalfLDS{
 
+namespace Mfma16x16HalfLDS{
     inline constexpr int WAVES_PER_BLOCK = 4;
     inline constexpr int THREADS_PER_BLOCK = 4;
     inline constexpr int T_BLOCK_X = WAVES_PER_BLOCK * WAVE_SIZE;

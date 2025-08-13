@@ -30,8 +30,13 @@ namespace Mfma4x4 {
 
 }
 
-namespace Mfma4x4HalfLDS{
+namespace Mfma4x4PingPong {
 
+    __global__ void gqa_packed(float16_t const* queries, float16_t const* key_mat, float32_t* attention_output, int group_size, int seq_len, int hidden_dim, int lda, int ldb, int ldd);
+
+}
+
+namespace Mfma4x4HalfLDS{
     __global__ void gqa_packed(float16_t const* queries, float16_t const* key_mat, float32_t* attention_output, int group_size, int seq_len, int hidden_dim, int lda, int ldb, int ldd);
 
     __device__ Mfma4x4::BFragT load_keys_4x4_row_major(float16_t const* input, int ld);
@@ -49,7 +54,6 @@ namespace Mfma16x16 {
 }
 
 namespace Mfma16x16HalfLDS{
-
     __global__ void gqa_packed(float16_t const* queries, float16_t const* key_mat, float32_t* attention_output, int group_size, int seq_len, int hidden_dim, int lda, int ldb, int ldd);
 
     __device__ Mfma16x16::BFragT load_keys_16x16_row_major(float16_t const* input, int ld);
