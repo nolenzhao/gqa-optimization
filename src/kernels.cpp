@@ -584,9 +584,6 @@ namespace Mfma4x4PingPong{
                 // keys is stored in row-major in HBM and stored as col-major in s_mem
                 Mfma4x4::load_keys_quad(shared_b + (parity * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), keys + (i * ldb + output_col_wave), ldb);
 
-                // Need to point to starting corner of two rows we want to load
-                __syncthreads();
-
                 // shared_a has been loaded as row-major so the load to registers is correctly col-major
                 // We only need to fill threads 0-3 per wave since we can braodcast with CBSZ and ABI
                 // However, A block still needs to go into LDS because each wave msut use it (as mfma instruciton is per wave)
@@ -619,6 +616,106 @@ namespace Mfma4x4PingPong{
             __syncthreads();
 
             Mfma4x4::store_attention_pattern_4x4_col_major(attention_output + (output_col_wave* ldd + output_row_wave), fragAcc, ldd);
+        }
+    }
+
+}
+
+namespace Mfma16x16PingPong{
+
+    __global__ void gqa_packed(
+        float16_t const* query, 
+        float16_t const* keys, 
+        float32_t* attention_output,
+        int group_size, 
+        int seq_len, 
+        int hidden_dim, 
+        int lda, 
+        int ldb, 
+        int ldd) {
+
+        // for a 1x4 output matrix, need to load one rows of A
+        // we have 4 waves in this t_block and they should be growing in y direction
+        
+        //load One block of A every iteration
+        __shared__ float16_t shared_a[2 * BLOCK_M * BLOCK_K];
+
+        // load 4 blocks of B every iteration to perform mfma with single A 
+        // Even though these values (for group_size < 16 and 16x16 mfma) are never used again 
+        // We should use LDS to reduce register pressure
+        // Just init to 4 16x16 
+        // It would be nice to dynamically allocate LDS depending on the seq_len size, but that would 
+        // require variable LDS size for diff threadBlocks
+        __shared__ float16_t shared_b[2 * BLOCK_K * BLOCK_N * WAVES_PER_BLOCK];
+
+        auto fragA = AFragT{};
+        auto fragB = BFragT{};
+        auto fragAcc = AccumFragT{};
+        fill_frag(fragAcc, 0.0f);
+
+        // Local here is local to the threadBlock
+
+        // find which wave we are in (there are 4 now)
+        int wave_id = threadIdx.x / WAVE_SIZE;
+        // partition into row/col; we wil alwyas have one row and (4?) cols
+        int wave_row = wave_id / (WAVES_PER_BLOCK * WAVE_SIZE);
+        int wave_col = wave_id % (WAVES_PER_BLOCK);
+
+        // Find which global wave this is. For each block in the output matrix, there is a corresponding wave
+        auto waveGridX = blockIdx.x + wave_row;
+        auto waveGridY = (blockIdx.y * WAVES_PER_BLOCK) + wave_col;
+
+        // This gets the absolute row/col of upperleft C block coord that this wave computes
+        auto cRow = waveGridX * BLOCK_M;
+        auto cCol = waveGridY * BLOCK_N;
+
+        if(cRow < group_size && cCol < seq_len){
+            int parity = 1;
+
+            if (wave_id == 0){
+                Mfma16x16::load_queries(shared_a, query + (0 * lda + cRow), lda);
+            }
+            Mfma16x16::load_keys_quad(shared_b + (wave_id * BLOCK_K * BLOCK_N), keys + (0 * ldb + cCol), ldb);
+            __syncthreads();
+            
+            // step through the K loop
+            for(int i = BLOCK_K; i < hidden_dim; i+= BLOCK_K){
+
+                // assuming 128-bit optimal loads per thread we only need one wave to load 
+                // the 16x16 A matrix -> we shuould try and load double 
+                // when we call load_queries we are already pointing at the correct upper left
+
+                if (wave_id == 0){
+                    Mfma16x16::load_queries(shared_a + (parity * BLOCK_M * BLOCK_K), query + (i * lda + cRow), lda);
+                }
+                Mfma16x16::load_keys_quad(shared_b + (parity * BLOCK_K * BLOCK_N * WAVES_PER_BLOCK) + (wave_id * BLOCK_K * BLOCK_N), keys + (i * ldb + cCol), ldb);
+
+                // Need to point to starting corner of two rows we want to load
+
+                // Have each thread load its fragment (4 fp16's in each frag) 
+                // shared_a has been loaded as row-major so the load to registers is correctly col-major
+                fragA = Mfma16x16::load_queries_16x16_col_major(shared_a + ((1 - parity) * BLOCK_M * BLOCK_K), BLOCK_K);
+
+                // stored row-major in HBM, we need this to be row-major in VGPR's
+                // seems like load to LDS should allow contiguous loads -> better?
+                fragB = Mfma16x16::load_keys_16x16_row_major(shared_b + ((1 - parity) * BLOCK_K * BLOCK_N * WAVES_PER_BLOCK) + (wave_id * BLOCK_K * BLOCK_N), BLOCK_K);
+
+                // Acumulate the ouput 16x16 blocks
+                // fragAcc holds 4 f32_t (row major order)
+
+                fragAcc = __builtin_amdgcn_mfma_f32_16x16x16f16(fragA, fragB, fragAcc, 0, 0, 0);
+
+                __syncthreads();
+
+                // switch parity bit
+                parity = parity ? 0 : 1;
+            }
+
+            fragA = Mfma16x16::load_queries_16x16_col_major(shared_a + ((1 - parity) * BLOCK_M * BLOCK_K), BLOCK_K);
+            fragB = Mfma16x16::load_keys_16x16_row_major(shared_b + ((1 - parity) * BLOCK_K * BLOCK_N * WAVES_PER_BLOCK) + (wave_id * BLOCK_K * BLOCK_N), BLOCK_K);
+            fragAcc = __builtin_amdgcn_mfma_f32_16x16x16f16(fragA, fragB, fragAcc, 0, 0, 0);
+
+            Mfma16x16::store_attention_pattern_16x16_col_major(attention_output + (cCol * ldd + cRow), fragAcc, ldd);
         }
     }
 
