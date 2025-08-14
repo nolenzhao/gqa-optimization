@@ -570,20 +570,6 @@ namespace Mfma4x4PingPong{
             // step through the K loop
             for(int i = BLOCK_K; i < hidden_dim; i+= BLOCK_K){
 
-                // when we call load_queries we are already pointing at the correct upper left
-                // We are storing queries in row-major order in LDS
-                // We load from HBM as col-major
-                // only need to load a 4x4f16 -> 256 bits -> use four threads to load  
-
-                if (threadIdx.x < 4){
-                    Mfma4x4::load_queries(shared_a + (parity * BLOCK_M * BLOCK_K), query + (i * lda + output_row_wave), lda);
-                }
-
-                // Just have each wave load it's own matrix -> each thread loads 8 bytes
-                // when we call this we are pointing at the correct row/col
-                // keys is stored in row-major in HBM and stored as col-major in s_mem
-                Mfma4x4::load_keys_quad(shared_b + (parity * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), keys + (i * ldb + output_col_wave), ldb);
-
                 // shared_a has been loaded as row-major so the load to registers is correctly col-major
                 // We only need to fill threads 0-3 per wave since we can braodcast with CBSZ and ABI
                 // However, A block still needs to go into LDS because each wave msut use it (as mfma instruciton is per wave)
@@ -602,6 +588,21 @@ namespace Mfma4x4PingPong{
                 // Acumulate the ouput 16x16 blocks
                 // fragAcc holds 4 f32_t (row major order)
                 fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);
+
+                // when we call load_queries we are already pointing at the correct upper left
+                // We are storing queries in row-major order in LDS
+                // We load from HBM as col-major
+                // only need to load a 4x4f16 -> 256 bits -> use four threads to load  
+
+                if (threadIdx.x < 4){
+                    Mfma4x4::load_queries(shared_a + (parity * BLOCK_M * BLOCK_K), query + (i * lda + output_row_wave), lda);
+                }
+
+                // Just have each wave load it's own matrix -> each thread loads 8 bytes
+                // when we call this we are pointing at the correct row/col
+                // keys is stored in row-major in HBM and stored as col-major in s_mem
+                Mfma4x4::load_keys_quad(shared_b + (parity * BLOCK_K * BLOCK_N * BLOCK_B * WAVES_PER_BLOCK) + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), keys + (i * ldb + output_col_wave), ldb);
+
                 __syncthreads();
 
                 // switch parity bit
@@ -681,17 +682,7 @@ namespace Mfma16x16PingPong{
             // step through the K loop
             for(int i = BLOCK_K; i < hidden_dim; i+= BLOCK_K){
 
-                // assuming 128-bit optimal loads per thread we only need one wave to load 
-                // the 16x16 A matrix -> we shuould try and load double 
-                // when we call load_queries we are already pointing at the correct upper left
-
-                if (wave_id == 0){
-                    Mfma16x16::load_queries(shared_a + (parity * BLOCK_M * BLOCK_K), query + (i * lda + cRow), lda);
-                }
-                Mfma16x16::load_keys_quad(shared_b + (parity * BLOCK_K * BLOCK_N * WAVES_PER_BLOCK) + (wave_id * BLOCK_K * BLOCK_N), keys + (i * ldb + cCol), ldb);
-
                 // Need to point to starting corner of two rows we want to load
-
                 // Have each thread load its fragment (4 fp16's in each frag) 
                 // shared_a has been loaded as row-major so the load to registers is correctly col-major
                 fragA = Mfma16x16::load_queries_16x16_col_major(shared_a + ((1 - parity) * BLOCK_M * BLOCK_K), BLOCK_K);
@@ -704,6 +695,14 @@ namespace Mfma16x16PingPong{
                 // fragAcc holds 4 f32_t (row major order)
 
                 fragAcc = __builtin_amdgcn_mfma_f32_16x16x16f16(fragA, fragB, fragAcc, 0, 0, 0);
+
+                // assuming 128-bit optimal loads per thread we only need one wave to load 
+                // the 16x16 A matrix -> we shuould try and load double 
+                // when we call load_queries we are already pointing at the correct upper left
+                if (wave_id == 0){
+                    Mfma16x16::load_queries(shared_a + (parity * BLOCK_M * BLOCK_K), query + (i * lda + cRow), lda);
+                }
+                Mfma16x16::load_keys_quad(shared_b + (parity * BLOCK_K * BLOCK_N * WAVES_PER_BLOCK) + (wave_id * BLOCK_K * BLOCK_N), keys + (i * ldb + cCol), ldb);
 
                 __syncthreads();
 
