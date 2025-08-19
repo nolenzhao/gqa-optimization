@@ -67,6 +67,14 @@ namespace Mfma4x4HalfLDSOccup{
     __global__ void gqa_packed(float16_t const* queries, float16_t const* key_mat, float32_t* attention_output, int group_size, int seq_len, int hidden_dim, int lda, int ldb, int ldd);
 }
 
+namespace Mfma4x4HalfLDSSplitK{
+    __global__ void gqa_packed(float16_t const* queries, float16_t const* key_mat, float32_t* attention_output, int group_size, int seq_len, int hidden_dim, int lda, int ldb, int ldd);
+    __device__ void store_attention_pattern_4x4_col_major(float32_t* output, Mfma4x4::AccumFragT accum, int ld);
+}
+namespace Mfma4x4HalfLDSOccupSplitK{
+    __global__ void gqa_packed(float16_t const* queries, float16_t const* key_mat, float32_t* attention_output, int group_size, int seq_len, int hidden_dim, int lda, int ldb, int ldd);
+}
+
 __device__ int col_major(const std::pair<int, int>& coord, int ld);
 __device__ int row_major(const std::pair<int, int>& coord, int ld);
 #endif

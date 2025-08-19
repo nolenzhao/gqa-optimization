@@ -3,7 +3,7 @@
 
 
 inline constexpr int GROUP_SIZE = 8;
-inline constexpr int SEQ_LEN = 3000;
+inline constexpr int SEQ_LEN = 100000;
 inline constexpr int HIDDEN_DIM = 128;
 inline constexpr int WAVE_SIZE = 64;
 
@@ -114,6 +114,58 @@ namespace Mfma4x4Occup{
     inline constexpr int PADDED_SEQ_LEN = ((SEQ_LEN + (BLOCK_N * BLOCK_B_PER_BLOCK_Y) - 1) / (BLOCK_N * BLOCK_B_PER_BLOCK_Y)) * (BLOCK_N * BLOCK_B_PER_BLOCK_Y);
 }
 namespace Mfma4x4HalfLDSOccup{
+    // 4x4x4f16_16B mfma
+    inline constexpr int WAVES_PER_BLOCK_Y = 4;
+    inline constexpr int WAVES_PER_BLOCK_X = 2;
+    inline constexpr int THREADS_PER_BLOCK = 4;
+    // Should really change this in the future
+    inline constexpr int T_BLOCK_X = (WAVES_PER_BLOCK_X * WAVES_PER_BLOCK_Y) * WAVE_SIZE;
+    inline constexpr int T_BLOCK_Y = 1;
+    inline constexpr int BLOCK_M = 4;
+    inline constexpr int BLOCK_N = 4;
+    inline constexpr int BLOCK_K = 4;
+    // block_b should be specifies as 16 in y direction and 1 in x direction
+    inline constexpr int BLOCK_B_Y = 16;
+    inline constexpr int BLOCK_B_X = 1;
+    // 16 * 4  = 64 
+    inline constexpr int BLOCK_B_PER_BLOCK_Y = BLOCK_B_Y * WAVES_PER_BLOCK_Y;
+    // 1 * 2 = 2
+    inline constexpr int BLOCK_B_PER_BLOCK_X = BLOCK_B_X * WAVES_PER_BLOCK_X;
+    // Calculate padded dimensions 
+    // At min each thradblock will use 8 waves to compute a 8 x 256, so even with one threadblock min output needs to be padded up
+    inline constexpr int PADDED_GROUP_SIZE = ((GROUP_SIZE + (BLOCK_M * BLOCK_B_PER_BLOCK_X) - 1) / (BLOCK_M * BLOCK_B_PER_BLOCK_X)) * (BLOCK_M * BLOCK_B_PER_BLOCK_X);
+    inline constexpr int PADDED_HIDDEN_DIM = ((HIDDEN_DIM + BLOCK_K - 1) / BLOCK_K) * BLOCK_K;
+    inline constexpr int PADDED_SEQ_LEN = ((SEQ_LEN + (BLOCK_N * BLOCK_B_PER_BLOCK_Y) - 1) / (BLOCK_N * BLOCK_B_PER_BLOCK_Y)) * (BLOCK_N * BLOCK_B_PER_BLOCK_Y);
+}
+
+// Usually one TB computes 8x256 output in half lds occup case
+// With  adition of splitK we have 4 TB comput 8x256 output
+namespace Mfma4x4HalfLDSSplitK{
+
+    // How many parts the loop is split into
+    inline constexpr int KSPLIT = 4;
+    // How many elems each of those chunks contain
+    inline constexpr int K_CHUNK_SIZE = HIDDEN_DIM / KSPLIT;
+    inline constexpr int WAVES_PER_BLOCK = 4;
+    inline constexpr int THREADS_PER_BLOCK = 4;
+    inline constexpr int T_BLOCK_X = WAVES_PER_BLOCK * WAVE_SIZE;
+    inline constexpr int T_BLOCK_Y = 1;
+    inline constexpr int BLOCK_M = 4;
+    inline constexpr int BLOCK_N = 4;
+    inline constexpr int BLOCK_K = 4;
+    // block_b should be specifies as 16 in y direction and 1 in x direction
+    inline constexpr int BLOCK_B = 16;
+    inline constexpr int BLOCK_B_PER_BLOCK = BLOCK_B * WAVES_PER_BLOCK;
+    // Calculate padded dimensions 
+    inline constexpr int PADDED_GROUP_SIZE = ((GROUP_SIZE + BLOCK_M - 1) / BLOCK_M) * BLOCK_M;
+    inline constexpr int PADDED_HIDDEN_DIM = ((HIDDEN_DIM + BLOCK_K - 1) / BLOCK_K) * BLOCK_K;
+    inline constexpr int PADDED_SEQ_LEN = ((SEQ_LEN + (BLOCK_N * BLOCK_B_PER_BLOCK) - 1) / (BLOCK_N * BLOCK_B_PER_BLOCK)) * (BLOCK_N * BLOCK_B_PER_BLOCK);
+}
+
+namespace Mfma4x4HalfLDSOccupSplitK{
+
+    inline constexpr int KSPLIT = 4;
+    inline constexpr int K_CHUNK_SIZE = HIDDEN_DIM / KSPLIT;
     // 4x4x4f16_16B mfma
     inline constexpr int WAVES_PER_BLOCK_Y = 4;
     inline constexpr int WAVES_PER_BLOCK_X = 2;
