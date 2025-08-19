@@ -4,7 +4,7 @@
 
 inline constexpr int GROUP_SIZE = 8;
 inline constexpr int SEQ_LEN = 100000;
-inline constexpr int HIDDEN_DIM = 64;
+inline constexpr int HIDDEN_DIM = 128;
 inline constexpr int WAVE_SIZE = 64;
 
 // waves_per_block should be specified as 4 in Y direction and 1 in x direction
