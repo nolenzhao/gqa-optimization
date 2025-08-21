@@ -1035,6 +1035,301 @@ namespace Mfma4x4HalfLDSOccup{
 
     }
 }
+namespace Mfma4x4HalfLDSSplitK{
+
+    __global__ void gqa_packed(
+        float16_t const* query, 
+        float16_t const* keys, 
+        float32_t* attention_output,
+        int group_size, 
+        int seq_len, 
+        int hidden_dim, 
+        int lda, 
+        int ldb, 
+        int ldd) {
+
+        // for a 1x4 output matrix, need to load one rows of A
+        // we have 4 waves in this t_block and they should be growing in y direction
+        
+        //load One block of A every iteration
+        __shared__ float16_t shared_a[Mfma4x4::BLOCK_M * Mfma4x4::BLOCK_K];
+
+        // load 4 blocks of B every iteration to perform mfma with single A 
+        // Even though these values (for group_size < 16 and 16x16 mfma) are never used again 
+        // We should use LDS to reduce register pressure
+        // Just init to 4 16x16 
+        // It would be nice to dynamically allocate LDS depending on the seq_len size, but that would 
+        // require variable LDS size for diff threadBlocks
+
+        auto fragA = Mfma4x4::AFragT{};
+        auto fragB = Mfma4x4::BFragT{};
+        auto fragAcc = Mfma4x4::AccumFragT{};
+        fill_frag(fragAcc, 0.0f);
+
+        // Local here is local to the threadBlock
+
+        // find which wave we are in (there are 4 now)
+        int local_wave_id = threadIdx.x / WAVE_SIZE;
+        // partition into row/col; we wil alwyas have one row and (4?) cols
+        int local_wave_row = local_wave_id / Mfma4x4::WAVES_PER_BLOCK;
+        int local_wave_col = local_wave_id % (Mfma4x4::WAVES_PER_BLOCK);
+
+        // Each wave computes 16 blocks in 4x4mfma -> find which block_id we are in within the the given wave
+        int local_block_id = (local_wave_id * Mfma4x4::BLOCK_B) + (threadIdx.x % WAVE_SIZE) / Mfma4x4::THREADS_PER_BLOCK;
+        int local_block_row = local_block_id / Mfma4x4::BLOCK_B_PER_BLOCK;
+        int local_block_col = local_block_id % Mfma4x4::BLOCK_B_PER_BLOCK; 
+
+        // Global here is in reference to the entire kernel launch accounting for all threadBlocks
+        // Find which global wave this is. For each block in the output matrix, there is a corresponding wave
+        int global_wave_row = blockIdx.x + local_wave_row;
+        int global_wave_col = (blockIdx.y * Mfma4x4::WAVES_PER_BLOCK) + local_wave_col;
+
+        // Find which global block this is 
+        int global_block_row = blockIdx.x + local_block_row;
+        int global_block_col = (blockIdx.y * Mfma4x4::BLOCK_B_PER_BLOCK) + local_block_col; 
+
+        // This gets the absolute row/col of upperleft C block coord that this wave computes
+        // Since we multiply in x direction for blockIdx.x -> div again to find actual output 
+        int output_row_wave = (global_wave_row / KSPLIT) * Mfma4x4::BLOCK_M;
+        int output_col_wave = global_wave_col * Mfma4x4::BLOCK_B * Mfma4x4::BLOCK_N;
+
+        // This gets the absolute row/col of the upperleft C block coord that this block computes
+        int output_row_bblock = (global_block_row / KSPLIT) * Mfma4x4::BLOCK_M;
+        int output_col_bblock = global_block_col * Mfma4x4::BLOCK_N;
+
+        // since we launched 4x the number of blocks needed in the x direction, 4 now correspond to a single chunk
+        int k_loop_chunk = blockIdx.x % KSPLIT;
+
+        // We need to check wave indexing here, not bblock indexing since threads 
+        // must not diverge within a wave
+        if(output_row_wave < group_size && output_col_wave < seq_len){
+            // step through the K loop
+            for(int i = k_loop_chunk * K_CHUNK_SIZE; i < (k_loop_chunk + 1) * K_CHUNK_SIZE; i+= BLOCK_K){
+
+                // when we call load_queries we are already pointing at the correct upper left
+                // We are storing queries in row-major order in LDS
+                // We load from HBM as col-major
+                // only need to load a 4x4f16 -> 256 bits -> use four threads to load  
+
+                __syncthreads();
+                
+                if (threadIdx.x < 4){
+                    Mfma4x4::load_queries(shared_a, query + (i * lda + output_row_wave), lda);
+                }
+
+                // Just have each wave load it's own matrix -> each thread loads 8 bytes
+                // when we call this we are pointing at the correct row/col
+                // keys is stored in row-major in HBM and stored as col-major in s_mem
+                // load_keys_quad(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B), keys + (i * ldb + output_col_wave), ldb);
+
+                __syncthreads();
+                // Need to point to starting corner of two rows we want to load
+
+                // shared_a has been loaded as row-major so the load to registers is correctly col-major
+                // We only need to fill threads 0-3 per wave since we can braodcast with CBSZ and ABI
+                // However, A block still needs to go into LDS because each wave msut use it (as mfma instruciton is per wave)
+                if (threadIdx.x % WAVE_SIZE < 4){
+                    fragA = Mfma4x4::load_queries_4x4_col_major(shared_a , Mfma4x4::BLOCK_K, local_wave_id);
+                }
+
+                // B is in row-major order
+                // keys gives us the start of matrix, ccol indexes into the row 
+                // i * ldb calculates (block_k (col dimension)* size of row)
+                // i.e. do a num rows * sizeof(rows) offset  
+
+                fragB = Mfma4x4HalfLDS::load_keys_4x4_row_major(keys + (i * ldb + output_col_wave), ldb);
+
+               
+                // Acumulate the ouput 16x16 blocks
+                // fragAcc holds 4 f32_t (row major order)
+                fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);
+
+
+            }
+            Mfma4x4HalfLDSSplitK::store_attention_pattern_4x4_col_major(attention_output + (output_col_wave* ldd + output_row_wave), fragAcc, ldd);
+        }
+
+    }
+
+    __device__ void store_attention_pattern_4x4_col_major(float32_t* output, Mfma4x4::AccumFragT accum, int ld){
+
+        static constexpr uint32_t Dim = BLOCK_N * BLOCK_B;
+        static constexpr uint32_t VW = vectorSize(Mfma4x4::AccumFragT{});
+
+        int local_t_id = threadIdx.x % WAVE_SIZE;
+        // these are stored in registers  in row major, so they need to be indexed as such
+        // These need to be stored in col-major in HBM
+        auto startCoord2D = std::make_pair((local_t_id / Dim) * VW, local_t_id % Dim);
+        auto stepCoord2D = std::make_pair(1u, 0u);
+        // accum is composed of 4 registers
+        // the matrix is stored in row-major order
+
+        // Takes the row-major view from the register and almost transposes it to column major indexing
+        // use threadIdx.x = 14 and see how it actually indexes properly from a column persepctive
+        // coord.first goes down into the column (across rows), and coord.second accesses across columns
+        // imagine the registers on top of the matrix, this is how mem is laid out, thread 0 holds 4 elems 
+        // of the first column (since the SIMD's hold row-major form) 
+        // similarly thread 1 holds 4 elems of the second column. thus we can store these contiugously
+        // coord.first = {0, 4, 8, 12} thus we are going into each column, and extracting, going across 
+        // columns using coord.second (i.e. thread1 -> return 0 + 1*16 = 16) -> this is correct in col major
+
+        auto startOffset = col_major(startCoord2D, ld);
+        // when transposes the col values are contiguous where the row values are not
+        auto kOffset = col_major(stepCoord2D, ld);
+
+        // *((AccumFragT*)(output + startOffset)) = accum;
+        atomicAdd(output + startOffset,accum[0]);
+        atomicAdd(output + (startOffset + kOffset),accum[1]);
+        atomicAdd(output + (startOffset + 2 * kOffset),accum[2]);
+        atomicAdd(output + (startOffset + 3 * kOffset),accum[3]);
+
+        // output[startOffset] = accum[0]; 
+        // output[startOffset + kOffset] = accum[1];
+        // output[startOffset + 2 * kOffset] = accum[2];
+        // output[startOffset + 3 * kOffset] = accum[3];
+    }
+
+}
+
+namespace Mfma4x4HalfLDSOccupSplitK{
+
+    __global__ void gqa_packed(
+        float16_t const* query, 
+        float16_t const* keys, 
+        float32_t* attention_output,
+        int group_size, 
+        int seq_len, 
+        int hidden_dim, 
+        int lda, 
+        int ldb, 
+        int ldd) {
+
+        // for a 1x4 output matrix, need to load one rows of A
+        // we have 4 waves in this t_block and they should be growing in y direction
+        
+        //load One block of A every iteration
+        __shared__ float16_t shared_a[BLOCK_M * BLOCK_K * BLOCK_B_PER_BLOCK_X];
+
+        // load 4 blocks of B every iteration to perform mfma with single A 
+        // Even though these values (for group_size < 16 and 16x16 mfma) are never used again 
+        // We should use LDS to reduce register pressure
+        // Just init to 4 16x16 
+        // It would be nice to dynamically allocate LDS depending on the seq_len size, but that would 
+        // require variable LDS size for diff threadBlocks
+
+        auto fragA = Mfma4x4::AFragT{};
+        auto fragB = Mfma4x4::BFragT{};
+        auto fragAcc = Mfma4x4::AccumFragT{};
+        fill_frag(fragAcc, 0.0f);
+
+        // Local here is local to the threadBlock
+
+        // find which wave we are in (there are 8 now)
+        // pretend they're arranged in row major when computing output
+        // | 0 | 1 | 2 | 3 | 
+        // | 4 | 5 | 6 | 7 | 
+        int local_wave_id = threadIdx.x / WAVE_SIZE;
+        // partition into row/col; we wil alwyas have one row and (4?) cols
+        // idx per afforementioned row-major order
+        int local_wave_row = local_wave_id / WAVES_PER_BLOCK_Y;
+        int local_wave_col = local_wave_id % (WAVES_PER_BLOCK_Y);
+
+        // Each wave computes 16 blocks in 4x4mfma -> find which block_id we are in within the the given wave
+        // Also order blocks row-major
+        // | 0 | 1 | 2 | ... | 63 | 
+        // | 64| 65| 66| ... | 127|
+        int local_block_id = (local_wave_id * BLOCK_B_Y) + (threadIdx.x % WAVE_SIZE) / THREADS_PER_BLOCK;
+        int local_block_row = local_block_id / BLOCK_B_PER_BLOCK_Y;
+        int local_block_col = local_block_id % BLOCK_B_PER_BLOCK_Y; 
+
+        // Global here is in reference to the entire kernel launch accounting for all threadBlocks
+        // Find which global wave this is. For each block in the output matrix, there is a corresponding wave
+        int global_wave_row = (blockIdx.x * WAVES_PER_BLOCK_X) + local_wave_row;
+        int global_wave_col = (blockIdx.y * WAVES_PER_BLOCK_Y) + local_wave_col;
+
+        // Find which global block that this is wave is associated with
+        int global_block_row = (blockIdx.x * BLOCK_B_PER_BLOCK_X)+ local_block_row;
+        int global_block_col = (blockIdx.y * BLOCK_B_PER_BLOCK_Y) + local_block_col; 
+
+        // This gets the absolute row/col of upperleft C block coord that this wave computes
+        // need granularity on if we are computing the top block or bottom block
+
+        // 8 waves per TB -> for 4 TB's 32 waves
+        // BLOCK_B_X == 1
+        // for exmaple if KSPLIT == 4 and we only have max global_wave_row == 7
+        // 7 / 4 * ... = 1 * 1 * 4 == 4
+        // global_wave_row 0 -> 0; global_wave_row 1 -> 1; global_wave_row 2 -> 0; global_wave_row 3 -> 1
+        /*
+        0 + 2 + 4 + 6 
+        1 + 3 + 5 + 7 
+
+        Basically map rows {0, 2, 4, 6} -> {0, 1, 2, 3}; {1, 3, 5, 7} -> {4, 5, 6, 7}
+        */
+        int output_row_wave = ((global_wave_row / WAVES_PER_BLOCK_X) + KSPLIT * (global_wave_row % WAVES_PER_BLOCK_X)) / KSPLIT *  BLOCK_B_X * BLOCK_M;
+        int output_col_wave = global_wave_col * BLOCK_B_Y * BLOCK_N;
+
+        // This gets the absolute row/col of the upperleft C block coord that this block computes
+        int output_row_bblock = ((global_block_row / BLOCK_B_PER_BLOCK_X) + KSPLIT * (global_block_row % BLOCK_B_PER_BLOCK_X)) /KSPLIT * BLOCK_B_X * BLOCK_M;
+        int output_col_bblock = global_block_col * BLOCK_N;
+
+        int k_loop_chunk = blockIdx.x % KSPLIT;
+
+        // We need to check wave indexing here, not bblock indexing since threads 
+        // must not diverge within a wave and the mfma instruction is per-wave
+        if(output_row_wave < group_size && output_col_wave < seq_len){
+            // step through the K loop
+            for(int i = k_loop_chunk * K_CHUNK_SIZE; i < (k_loop_chunk + 1) * K_CHUNK_SIZE; i+= BLOCK_K){
+
+                // when we call load_queries we are already pointing at the correct upper left
+                // We are storing queries in row-major order in LDS
+                // We load from HBM as col-major
+                // only need to load a 4x4f16 -> 256 bits -> use four threads to load  
+
+                __syncthreads();
+                
+                // This single load gathers the block_b for all blocks AND waves sharing the piece
+                // we need to load the top and bottom depending on which threads we are with
+
+                if (local_block_col == 0)
+                    Mfma4x4::load_queries(shared_a + local_wave_row * (BLOCK_M * BLOCK_K), query + (i * lda + output_row_wave), lda);
+
+                // Just have each wave load it's own matrix -> each thread loads 8 bytes
+                // when we call this we are pointing at the correct row/col
+                // keys is stored in row-major in HBM and stored as col-major in s_mem
+                // Pass in this wave's stuff
+                // if(local_wave_row == 0)
+                //     Mfma4x4::load_keys_quad(shared_b + (local_wave_id * BLOCK_K * BLOCK_N * BLOCK_B_Y), keys + (i * ldb + output_col_wave), ldb);
+
+                __syncthreads();
+                // Need to point to starting corner of two rows we want to load
+
+                // shared_a has been loaded as row-major so the load to registers is correctly col-major
+                // We only need to fill threads 0-3 per wave since we can braodcast with CBSZ and ABI
+                // However, A block still needs to go into LDS because each wave msut use it (as mfma instruciton is per wave)
+                if (threadIdx.x % WAVE_SIZE < 4){
+                    fragA = Mfma4x4::load_queries_4x4_col_major(shared_a + local_wave_row * (BLOCK_M * BLOCK_K), BLOCK_K, local_wave_id);
+                }
+
+                // B is in row-major order
+                // keys gives us the start of matrix, ccol indexes into the row 
+                // i * ldb calculates (block_k (col dimension)* size of row)
+                // i.e. do a num rows * sizeof(rows) offset  
+                // Point to this waves thing! We index according ot block inside the function
+                // fragB = Mfma4x4::load_keys_4x4_row_major(keys +  + local_wave_col * (BLOCK_K * BLOCK_N * BLOCK_B_Y), BLOCK_K);
+                fragB = Mfma4x4HalfLDS::load_keys_4x4_row_major(keys + (i * ldb + output_col_wave), ldb);
+               
+                // Acumulate the ouput 16x16 blocks
+                // fragAcc holds 4 f32_t (row major order)
+                fragAcc = __builtin_amdgcn_mfma_f32_4x4x4f16(fragA, fragB, fragAcc, 4, 0, 0);
+
+            }
+            Mfma4x4HalfLDSSplitK::store_attention_pattern_4x4_col_major(attention_output + (output_col_wave* ldd + output_row_wave), fragAcc, ldd);
+        }
+
+    }
+}
+
+
 namespace Mfma16x16{
 
     __global__ void gqa_packed(
